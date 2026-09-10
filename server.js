@@ -7,85 +7,57 @@ import crypto from 'node:crypto';
 
 /*
 |--------------------------------------------------------------------------
-| 配置
+| Configuration
 |--------------------------------------------------------------------------
 */
 
-const PORT = Number(process.env.PORT || 8080);
-
-/*
- * 文件逻辑 chunk。
- * 上传时每个 chunk 的大小。
- */
-const CHUNK_SIZE = Number(
-    process.env.CHUNK_SIZE || 8 * 1024 * 1024
+const PORT = Number(
+    process.env.PORT || 8080
 );
 
 /*
- * 钉钉同时进行的最大 Range 请求数。
- * 防止多人播放时连接数失控。
+ * 每个上传 chunk 大小。
+ *
+ * 默认 8MB。
+ */
+const CHUNK_SIZE = Math.max(
+    256 * 1024,
+    Number(
+        process.env.CHUNK_SIZE ||
+        8 * 1024 * 1024
+    )
+);
+
+/*
+ * 钉钉远程请求最大并发。
  */
 const GLOBAL_REMOTE_CONCURRENCY = Math.max(
     1,
-    Number(process.env.GLOBAL_REMOTE_CONCURRENCY || 32)
+    Number(
+        process.env.GLOBAL_REMOTE_CONCURRENCY ||
+        32
+    )
 );
 
 /*
-|--------------------------------------------------------------------------
-| 拖拽 Range 缓冲
-|--------------------------------------------------------------------------
-|
-| 首次打开：
-|   完全不使用这个缓存。
-|
-| 拖拽：
-|   才启用。
-|
-|--------------------------------------------------------------------------
-*/
-
-/*
- * 每次拖拽向钉钉扩大的读取范围。
+ * 钉钉请求超时。
  *
- * 例如浏览器只要：
- *
- *   400000000-400100000
- *
- * Node 会向钉钉请求附近更大的区域。
+ * 注意：
+ * 这里不是整个视频下载超时。
+ * 而是单个 Range HTTP 请求的超时。
  */
-const SEEK_PREFETCH_SIZE = Number(
-    process.env.SEEK_PREFETCH_SIZE || 8 * 1024 * 1024
+const REMOTE_TIMEOUT_MS = Math.max(
+    3000,
+    Number(
+        process.env.REMOTE_TIMEOUT_MS ||
+        30000
+    )
 );
 
 /*
- * 单个缓冲块最大大小。
- */
-const SEEK_BUFFER_SIZE = Number(
-    process.env.SEEK_BUFFER_SIZE || 8 * 1024 * 1024
-);
-
-/*
- * 整个服务器所有拖拽缓冲允许使用的最大内存。
+ * seek 缓存。
  *
- * 默认 128MB。
- *
- * 超过以后自动淘汰旧缓存。
- */
-const MAX_SEEK_CACHE_BYTES = Number(
-    process.env.MAX_SEEK_CACHE_BYTES ||
-    128 * 1024 * 1024
-);
-
-/*
- * 单个文件最多占用多少拖拽缓存。
- */
-const MAX_SEEK_CACHE_PER_FILE = Number(
-    process.env.MAX_SEEK_CACHE_PER_FILE ||
-    16 * 1024 * 1024
-);
-
-/*
- * 是否允许拖拽缓冲。
+ * 只有浏览器跳转 Range 时使用。
  */
 const SEEK_CACHE_ENABLED =
     String(
@@ -93,32 +65,81 @@ const SEEK_CACHE_ENABLED =
     ).toLowerCase() === 'true';
 
 /*
- * 钉钉请求超时。
+ * seek 时向附近扩展多少。
  */
-const REMOTE_TIMEOUT_MS = Number(
-    process.env.REMOTE_TIMEOUT_MS || 15000
+const SEEK_PREFETCH_SIZE = Math.max(
+    256 * 1024,
+    Number(
+        process.env.SEEK_PREFETCH_SIZE ||
+        4 * 1024 * 1024
+    )
 );
 
 /*
- * 钉钉上传地址。
+ * 单个 seek buffer 最大大小。
  */
+const SEEK_BUFFER_SIZE = Math.max(
+    256 * 1024,
+    Number(
+        process.env.SEEK_BUFFER_SIZE ||
+        4 * 1024 * 1024
+    )
+);
+
+/*
+ * 全局 seek cache 最大内存。
+ *
+ * 默认 64MB。
+ */
+const MAX_SEEK_CACHE_BYTES = Math.max(
+    0,
+    Number(
+        process.env.MAX_SEEK_CACHE_BYTES ||
+        64 * 1024 * 1024
+    )
+);
+
+/*
+ * 单文件 seek cache 最大内存。
+ */
+const MAX_SEEK_CACHE_PER_FILE = Math.max(
+    0,
+    Number(
+        process.env.MAX_SEEK_CACHE_PER_FILE ||
+        8 * 1024 * 1024
+    )
+);
+
+/*
+|--------------------------------------------------------------------------
+| DingTalk
+|--------------------------------------------------------------------------
+*/
+
 const DINGTALK_UPLOAD_URL =
     process.env.DINGTALK_UPLOAD_URL ||
     'https://h5.dingtalk.com/common/picUpload';
 
 /*
 |--------------------------------------------------------------------------
-| 目录
+| Storage
 |--------------------------------------------------------------------------
 */
 
-const STORAGE_DIR = path.resolve('./storage');
+const STORAGE_DIR =
+    path.resolve('./storage');
 
 const MANIFEST_DIR =
-    path.join(STORAGE_DIR, 'manifests');
+    path.join(
+        STORAGE_DIR,
+        'manifests'
+    );
 
 const UPLOAD_DIR =
-    path.join(STORAGE_DIR, 'uploads');
+    path.join(
+        STORAGE_DIR,
+        'uploads'
+    );
 
 await fs.mkdir(
     MANIFEST_DIR,
@@ -141,83 +162,123 @@ await fs.mkdir(
 */
 
 const MIME_TYPES = {
-    '.mp3': 'audio/mpeg',
-    '.wav': 'audio/wav',
-    '.flac': 'audio/flac',
-    '.aac': 'audio/aac',
-    '.ogg': 'audio/ogg',
-    '.oga': 'audio/ogg',
-    '.opus': 'audio/opus',
-    '.m4a': 'audio/mp4',
-    '.wma': 'audio/x-ms-wma',
 
-    '.mp4': 'video/mp4',
-    '.m4v': 'video/x-m4v',
-    '.mov': 'video/quicktime',
-    '.mkv': 'video/x-matroska',
-    '.webm': 'video/webm',
-    '.avi': 'video/x-msvideo',
-    '.wmv': 'video/x-ms-wmv',
-    '.flv': 'video/x-flv',
-    '.ts': 'video/mp2t',
-    '.mts': 'video/mp2t',
-    '.m2ts': 'video/mp2t',
-    '.3gp': 'video/3gpp',
-    '.3g2': 'video/3gpp2',
-    '.ogv': 'video/ogg',
+    /*
+     * Video
+     */
+    '.mp4':
+        'video/mp4',
 
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.bmp': 'image/bmp',
-    '.svg': 'image/svg+xml',
-    '.ico': 'image/x-icon',
-    '.tif': 'image/tiff',
-    '.tiff': 'image/tiff',
-    '.avif': 'image/avif',
+    '.m4v':
+        'video/x-m4v',
 
-    '.pdf': 'application/pdf',
+    '.mov':
+        'video/quicktime',
 
-    '.apk':
-        'application/vnd.android.package-archive',
+    '.mkv':
+        'video/x-matroska',
 
-    '.aab':
-        'application/octet-stream',
+    '.webm':
+        'video/webm',
 
-    '.exe':
-        'application/vnd.microsoft.portable-executable',
+    '.avi':
+        'video/x-msvideo',
 
-    '.msi':
-        'application/x-msdownload',
+    '.wmv':
+        'video/x-ms-wmv',
 
-    '.dmg':
-        'application/x-apple-diskimage',
+    '.flv':
+        'video/x-flv',
 
-    '.iso':
-        'application/x-iso9660-image',
+    '.ts':
+        'video/mp2t',
 
-    '.zip':
-        'application/zip',
+    '.mts':
+        'video/mp2t',
 
-    '.rar':
-        'application/vnd.rar',
+    '.m2ts':
+        'video/mp2t',
 
-    '.7z':
-        'application/x-7z-compressed',
+    '.3gp':
+        'video/3gpp',
 
-    '.tar':
-        'application/x-tar',
+    '.3g2':
+        'video/3gpp2',
 
-    '.gz':
-        'application/gzip',
+    '.ogv':
+        'video/ogg',
 
-    '.bz2':
-        'application/x-bzip2',
+    /*
+     * Audio
+     */
+    '.mp3':
+        'audio/mpeg',
 
-    '.xz':
-        'application/x-xz',
+    '.wav':
+        'audio/wav',
+
+    '.flac':
+        'audio/flac',
+
+    '.aac':
+        'audio/aac',
+
+    '.ogg':
+        'audio/ogg',
+
+    '.oga':
+        'audio/ogg',
+
+    '.opus':
+        'audio/opus',
+
+    '.m4a':
+        'audio/mp4',
+
+    '.wma':
+        'audio/x-ms-wma',
+
+    /*
+     * Images
+     */
+    '.jpg':
+        'image/jpeg',
+
+    '.jpeg':
+        'image/jpeg',
+
+    '.png':
+        'image/png',
+
+    '.gif':
+        'image/gif',
+
+    '.webp':
+        'image/webp',
+
+    '.bmp':
+        'image/bmp',
+
+    '.svg':
+        'image/svg+xml',
+
+    '.ico':
+        'image/x-icon',
+
+    '.tif':
+        'image/tiff',
+
+    '.tiff':
+        'image/tiff',
+
+    '.avif':
+        'image/avif',
+
+    /*
+     * Documents
+     */
+    '.pdf':
+        'application/pdf',
 
     '.doc':
         'application/msword',
@@ -268,7 +329,52 @@ const MIME_TYPES = {
         'text/javascript',
 
     '.wasm':
-        'application/wasm'
+        'application/wasm',
+
+    /*
+     * Archives
+     */
+    '.zip':
+        'application/zip',
+
+    '.rar':
+        'application/vnd.rar',
+
+    '.7z':
+        'application/x-7z-compressed',
+
+    '.tar':
+        'application/x-tar',
+
+    '.gz':
+        'application/gzip',
+
+    '.bz2':
+        'application/x-bzip2',
+
+    '.xz':
+        'application/x-xz',
+
+    /*
+     * Executables
+     */
+    '.apk':
+        'application/vnd.android.package-archive',
+
+    '.aab':
+        'application/octet-stream',
+
+    '.exe':
+        'application/vnd.microsoft.portable-executable',
+
+    '.msi':
+        'application/x-msdownload',
+
+    '.dmg':
+        'application/x-apple-diskimage',
+
+    '.iso':
+        'application/x-iso9660-image'
 };
 
 /*
@@ -277,19 +383,23 @@ const MIME_TYPES = {
 |--------------------------------------------------------------------------
 */
 
-const app = express();
+const app =
+    express();
 
-app.disable('x-powered-by');
+app.disable(
+    'x-powered-by'
+);
 
 app.use(
     express.json({
-        limit: '2mb'
+        limit:
+            '2mb'
     })
 );
 
 /*
 |--------------------------------------------------------------------------
-| Public
+| Static
 |--------------------------------------------------------------------------
 */
 
@@ -305,21 +415,28 @@ app.use(
 |--------------------------------------------------------------------------
 */
 
-const upload = multer({
-    dest: UPLOAD_DIR,
+const upload =
+    multer({
 
-    limits: {
-        fileSize: CHUNK_SIZE
-    }
-});
+        dest:
+            UPLOAD_DIR,
+
+        limits: {
+
+            fileSize:
+                CHUNK_SIZE
+        }
+    });
 
 /*
 |--------------------------------------------------------------------------
-| 工具
+| Utility
 |--------------------------------------------------------------------------
 */
 
-function sanitizeFilename(filename) {
+function sanitizeFilename(
+    filename
+) {
 
     if (
         typeof filename !== 'string'
@@ -346,22 +463,28 @@ function sanitizeFilename(filename) {
     if (
         result.length > 255
     ) {
+
         result =
-            result.slice(0, 255);
+            result.slice(
+                0,
+                255
+            );
     }
 
     return result;
 }
 
-function getExtension(filename) {
+function getExtension(
+    filename
+) {
 
-    const safe =
-        sanitizeFilename(filename);
-
-    return (
-        path.extname(safe) ||
-        ''
-    ).toLowerCase();
+    return path
+        .extname(
+            sanitizeFilename(
+                filename
+            )
+        )
+        .toLowerCase();
 }
 
 function getMimeType(
@@ -370,11 +493,14 @@ function getMimeType(
 ) {
 
     const ext =
-        getExtension(filename);
+        getExtension(
+            filename
+        );
 
     if (
         MIME_TYPES[ext]
     ) {
+
         return MIME_TYPES[ext];
     }
 
@@ -384,13 +510,16 @@ function getMimeType(
         browserType !==
             'application/octet-stream'
     ) {
+
         return browserType;
     }
 
     return 'application/octet-stream';
 }
 
-function isValidId(id) {
+function isValidId(
+    id
+) {
 
     return (
         typeof id === 'string' &&
@@ -404,7 +533,9 @@ function isValidId(id) {
 |--------------------------------------------------------------------------
 */
 
-function getManifestPath(id) {
+function getManifestPath(
+    id
+) {
 
     return path.join(
         MANIFEST_DIR,
@@ -412,10 +543,14 @@ function getManifestPath(id) {
     );
 }
 
-async function saveManifest(manifest) {
+async function saveManifest(
+    manifest
+) {
 
     const target =
-        getManifestPath(manifest.id);
+        getManifestPath(
+            manifest.id
+        );
 
     const temp =
         `${target}.${process.pid}.${Date.now()}.tmp`;
@@ -436,34 +571,38 @@ async function saveManifest(manifest) {
     );
 }
 
-async function getManifest(id) {
+async function getManifest(
+    id
+) {
 
     if (
         !isValidId(id)
     ) {
+
         return null;
     }
 
     try {
 
-        const data =
+        const text =
             await fs.readFile(
                 getManifestPath(id),
                 'utf8'
             );
 
-        return JSON.parse(data);
+        return JSON.parse(
+            text
+        );
 
     } catch {
 
         return null;
-
     }
 }
 
 /*
 |--------------------------------------------------------------------------
-| Manifest 创建
+| Create Manifest
 |--------------------------------------------------------------------------
 */
 
@@ -475,7 +614,9 @@ function createManifest({
 }) {
 
     const safeFilename =
-        sanitizeFilename(filename);
+        sanitizeFilename(
+            filename
+        );
 
     return {
 
@@ -512,17 +653,20 @@ function createManifest({
             'uploading',
 
         createdAt:
-            new Date().toISOString()
+            new Date()
+                .toISOString()
     };
 }
 
 /*
 |--------------------------------------------------------------------------
-| URL 提取
+| URL finder
 |--------------------------------------------------------------------------
 */
 
-function findUrl(value) {
+function findUrl(
+    value
+) {
 
     if (
         typeof value === 'string'
@@ -531,6 +675,7 @@ function findUrl(value) {
         if (
             /^https?:\/\//i.test(value)
         ) {
+
             return value;
         }
 
@@ -541,49 +686,80 @@ function findUrl(value) {
         !value ||
         typeof value !== 'object'
     ) {
+
         return null;
     }
 
-    const candidates = [
+    const directCandidates = [
 
         value.url,
+
         value.src,
+
         value.imageUrl,
+
         value.imgUrl,
+
         value.picUrl,
+
         value.downloadUrl,
 
+        value.fileUrl,
+
+        value.fileUrlPath,
+
         value.data?.url,
+
         value.data?.src,
+
         value.data?.imageUrl,
+
         value.data?.imgUrl,
+
         value.data?.picUrl,
 
+        value.data?.downloadUrl,
+
+        value.data?.fileUrl,
+
         value.result?.url,
+
         value.result?.src,
+
         value.result?.imageUrl,
+
         value.result?.imgUrl,
-        value.result?.picUrl
+
+        value.result?.picUrl,
+
+        value.result?.downloadUrl,
+
+        value.result?.fileUrl
     ];
 
     for (
-        const candidate of candidates
+        const candidate
+        of directCandidates
     ) {
 
         if (
             typeof candidate === 'string' &&
             /^https?:\/\//i.test(candidate)
         ) {
+
             return candidate;
         }
     }
 
     for (
-        const child of Object.values(value)
+        const child
+        of Object.values(value)
     ) {
 
         const url =
-            findUrl(child);
+            findUrl(
+                child
+            );
 
         if (url) {
             return url;
@@ -595,7 +771,7 @@ function findUrl(value) {
 
 /*
 |--------------------------------------------------------------------------
-| 钉钉 Header
+| DingTalk headers
 |--------------------------------------------------------------------------
 */
 
@@ -631,13 +807,24 @@ function getDingTalkHeaders() {
 
 /*
 |--------------------------------------------------------------------------
-| 上传到钉钉
+| Upload to DingTalk
+|--------------------------------------------------------------------------
+|
+| 重要：
+|
+| 以前这里固定：
+|
+|     type: image/jpeg
+|
+| 现在不再伪装成 JPEG。
+|
 |--------------------------------------------------------------------------
 */
 
 async function uploadChunkToDingTalk({
     filePath,
-    filename
+    filename,
+    contentType
 }) {
 
     const buffer =
@@ -652,7 +839,8 @@ async function uploadChunkToDingTalk({
             ],
             {
                 type:
-                    'image/jpeg'
+                    contentType ||
+                    'application/octet-stream'
             }
         );
 
@@ -669,6 +857,7 @@ async function uploadChunkToDingTalk({
         await fetch(
             DINGTALK_UPLOAD_URL,
             {
+
                 method:
                     'POST',
 
@@ -699,7 +888,10 @@ async function uploadChunkToDingTalk({
             `DingTalk HTTP ${
                 response.status
             }: ${
-                text.slice(0, 1000)
+                text.slice(
+                    0,
+                    1000
+                )
             }`
         );
     }
@@ -709,19 +901,26 @@ async function uploadChunkToDingTalk({
     try {
 
         data =
-            JSON.parse(text);
+            JSON.parse(
+                text
+            );
 
     } catch {
 
         throw new Error(
             `DingTalk 返回非 JSON: ${
-                text.slice(0, 1000)
+                text.slice(
+                    0,
+                    1000
+                )
             }`
         );
     }
 
     const url =
-        findUrl(data);
+        findUrl(
+            data
+        );
 
     if (!url) {
 
@@ -731,14 +930,17 @@ async function uploadChunkToDingTalk({
     }
 
     return {
+
         url,
-        raw: data
+
+        raw:
+            data
     };
 }
 
 /*
 |--------------------------------------------------------------------------
-| 全局远程并发
+| Remote concurrency
 |--------------------------------------------------------------------------
 */
 
@@ -760,6 +962,7 @@ async function acquireRemoteSlot() {
 
     await new Promise(
         resolve => {
+
             globalRemoteQueue.push(
                 resolve
             );
@@ -781,13 +984,14 @@ function releaseRemoteSlot() {
         globalRemoteQueue.shift();
 
     if (next) {
+
         next();
     }
 }
 
 /*
 |--------------------------------------------------------------------------
-| Range
+| Parse HTTP Range
 |--------------------------------------------------------------------------
 */
 
@@ -797,14 +1001,18 @@ function parseRange(
 ) {
 
     if (!header) {
+
         return null;
     }
 
     const match =
         /^bytes=(\d*)-(\d*)$/
-            .exec(header);
+            .exec(
+                header.trim()
+            );
 
     if (!match) {
+
         throw new Error(
             'Invalid Range'
         );
@@ -819,17 +1027,25 @@ function parseRange(
     let start;
     let end;
 
+    /*
+     * bytes=-500
+     */
     if (
         startText === ''
     ) {
 
         const length =
-            Number(endText);
+            Number(
+                endText
+            );
 
         if (
-            !Number.isSafeInteger(length) ||
+            !Number.isSafeInteger(
+                length
+            ) ||
             length <= 0
         ) {
+
             throw new Error(
                 'Invalid Range'
             );
@@ -847,17 +1063,25 @@ function parseRange(
     } else {
 
         start =
-            Number(startText);
+            Number(
+                startText
+            );
 
         if (
-            !Number.isSafeInteger(start) ||
+            !Number.isSafeInteger(
+                start
+            ) ||
             start < 0
         ) {
+
             throw new Error(
                 'Invalid Range'
             );
         }
 
+        /*
+         * bytes=500-
+         */
         if (
             endText === ''
         ) {
@@ -868,12 +1092,16 @@ function parseRange(
         } else {
 
             end =
-                Number(endText);
+                Number(
+                    endText
+                );
         }
     }
 
     if (
-        !Number.isSafeInteger(end) ||
+        !Number.isSafeInteger(
+            end
+        ) ||
         end < start ||
         start >= totalSize
     ) {
@@ -896,18 +1124,22 @@ function parseRange(
         end,
 
         length:
-            end - start + 1
+            end -
+            start +
+            1
     };
 }
 
 /*
 |--------------------------------------------------------------------------
-| 钉钉 Range
+| Remote Range Request
 |--------------------------------------------------------------------------
 |
-| 固定按 206。
+| 最重要：
 |
-| 不做 200 fallback。
+| 每次只从钉钉拿真正需要的 Range。
+|
+| 不读取整个文件。
 |
 |--------------------------------------------------------------------------
 */
@@ -926,7 +1158,7 @@ async function fetchDingTalkRange({
 
     let released = false;
 
-    const release = () => {
+    function release() {
 
         if (released) {
             return;
@@ -935,12 +1167,12 @@ async function fetchDingTalkRange({
         released = true;
 
         releaseRemoteSlot();
-    };
+    }
 
-    const onAbort = () => {
+    function onAbort() {
 
         controller.abort();
-    };
+    }
 
     if (signal) {
 
@@ -956,7 +1188,8 @@ async function fetchDingTalkRange({
                 'abort',
                 onAbort,
                 {
-                    once: true
+                    once:
+                        true
                 }
             );
         }
@@ -965,7 +1198,9 @@ async function fetchDingTalkRange({
     const timer =
         setTimeout(
             () => {
+
                 controller.abort();
+
             },
             REMOTE_TIMEOUT_MS
         );
@@ -982,6 +1217,7 @@ async function fetchDingTalkRange({
             await fetch(
                 url,
                 {
+
                     method:
                         'GET',
 
@@ -996,23 +1232,23 @@ async function fetchDingTalkRange({
             );
 
         /*
-         * 钉钉源已经确认固定返回 206。
+         * 不允许 200 fallback。
          */
         if (
             response.status !== 206
         ) {
 
-            release();
-
             throw new Error(
-                `DingTalk Range 请求异常：HTTP ${
+                `DingTalk Range 请求必须返回 206，实际 HTTP ${
                     response.status
                 }`
             );
         }
 
         return {
+
             response,
+
             release
         };
 
@@ -1024,7 +1260,9 @@ async function fetchDingTalkRange({
 
     } finally {
 
-        clearTimeout(timer);
+        clearTimeout(
+            timer
+        );
 
         if (signal) {
 
@@ -1038,726 +1276,20 @@ async function fetchDingTalkRange({
 
 /*
 |--------------------------------------------------------------------------
-| 读取远程 Range 到 Buffer
+| Stream DingTalk response directly
 |--------------------------------------------------------------------------
 |
-| 只用于“拖拽缓存”。
+| 这个函数是首次播放的核心。
 |
-| 首次播放绝不会调用这个函数。
+| DingTalk
+|     ↓
+| response.body
+|     ↓
+| Node
+|     ↓
+| browser
 |
-|--------------------------------------------------------------------------
-*/
-
-async function fetchRemoteBuffer({
-    url,
-    start,
-    end,
-    signal
-}) {
-
-    const remote =
-        await fetchDingTalkRange({
-            url,
-            start,
-            end,
-            signal
-        });
-
-    try {
-
-        if (
-            !remote.response.body
-        ) {
-
-            throw new Error(
-                'DingTalk response body 不存在'
-            );
-        }
-
-        const reader =
-            remote.response
-                .body
-                .getReader();
-
-        const parts = [];
-
-        let total = 0;
-
-        try {
-
-            while (true) {
-
-                if (
-                    signal?.aborted
-                ) {
-
-                    try {
-                        await reader.cancel();
-                    } catch {}
-
-                    throw new Error(
-                        'Request aborted'
-                    );
-                }
-
-                const {
-                    done,
-                    value
-                } =
-                    await reader.read();
-
-                if (done) {
-                    break;
-                }
-
-                if (
-                    value &&
-                    value.byteLength
-                ) {
-
-                    parts.push(
-                        Buffer.from(
-                            value
-                        )
-                    );
-
-                    total +=
-                        value.byteLength;
-                }
-            }
-
-        } finally {
-
-            try {
-                reader.releaseLock();
-            } catch {}
-        }
-
-        return Buffer.concat(
-            parts,
-            total
-        );
-
-    } finally {
-
-        remote.release();
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Range 缓冲区
-|--------------------------------------------------------------------------
-|
-| LRU：
-|
-| 最近使用的放后面。
-|
-|--------------------------------------------------------------------------
-*/
-
-const seekCache = new Map();
-
-/*
- * 总缓存字节数。
- */
-let seekCacheBytes = 0;
-
-/*
- * 缓存对象：
- *
- * {
- *   key,
- *   fileId,
- *   start,
- *   end,
- *   buffer,
- *   createdAt,
- *   lastUsed
- * }
- */
-
-/*
-|--------------------------------------------------------------------------
-| Cache Key
-|--------------------------------------------------------------------------
-*/
-
-function makeSeekCacheKey(
-    fileId,
-    start,
-    end
-) {
-
-    return `${fileId}:${start}:${end}`;
-}
-
-/*
-|--------------------------------------------------------------------------
-| 查找覆盖当前 Range 的缓存
-|--------------------------------------------------------------------------
-*/
-
-function findCoveringSeekCache(
-    fileId,
-    start,
-    end
-) {
-
-    let found = null;
-
-    for (
-        const entry of seekCache.values()
-    ) {
-
-        if (
-            entry.fileId !== fileId
-        ) {
-            continue;
-        }
-
-        if (
-            entry.start <= start &&
-            entry.end >= end
-        ) {
-
-            if (
-                !found ||
-                entry.lastUsed <
-                    found.lastUsed
-            ) {
-
-                found = entry;
-            }
-        }
-    }
-
-    if (found) {
-
-        found.lastUsed =
-            Date.now();
-
-        /*
-         * LRU 移到最后。
-         */
-        seekCache.delete(
-            found.key
-        );
-
-        seekCache.set(
-            found.key,
-            found
-        );
-    }
-
-    return found;
-}
-
-/*
-|--------------------------------------------------------------------------
-| 删除缓存
-|--------------------------------------------------------------------------
-*/
-
-function removeSeekCache(
-    key
-) {
-
-    const entry =
-        seekCache.get(key);
-
-    if (!entry) {
-        return;
-    }
-
-    seekCache.delete(key);
-
-    seekCacheBytes =
-        Math.max(
-            0,
-            seekCacheBytes -
-                entry.buffer.length
-        );
-}
-
-/*
-|--------------------------------------------------------------------------
-| 清理 LRU
-|--------------------------------------------------------------------------
-*/
-
-function evictSeekCache(
-    requiredBytes = 0
-) {
-
-    while (
-        seekCacheBytes +
-            requiredBytes >
-            MAX_SEEK_CACHE_BYTES
-    ) {
-
-        const first =
-            seekCache.entries()
-                .next();
-
-        if (
-            first.done
-        ) {
-            break;
-        }
-
-        const [
-            key
-        ] =
-            first.value;
-
-        removeSeekCache(
-            key
-        );
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| 当前文件缓存清理
-|--------------------------------------------------------------------------
-*/
-
-function getFileSeekCacheBytes(
-    fileId
-) {
-
-    let total = 0;
-
-    for (
-        const entry of seekCache.values()
-    ) {
-
-        if (
-            entry.fileId === fileId
-        ) {
-
-            total +=
-                entry.buffer.length;
-        }
-    }
-
-    return total;
-}
-
-function evictFileSeekCache(
-    fileId,
-    requiredBytes = 0
-) {
-
-    while (
-        getFileSeekCacheBytes(fileId) +
-            requiredBytes >
-            MAX_SEEK_CACHE_PER_FILE
-    ) {
-
-        let oldest = null;
-
-        for (
-            const entry of seekCache.values()
-        ) {
-
-            if (
-                entry.fileId !== fileId
-            ) {
-                continue;
-            }
-
-            if (
-                !oldest ||
-                entry.lastUsed <
-                    oldest.lastUsed
-            ) {
-
-                oldest = entry;
-            }
-        }
-
-        if (!oldest) {
-            break;
-        }
-
-        removeSeekCache(
-            oldest.key
-        );
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| 写入拖拽缓存
-|--------------------------------------------------------------------------
-*/
-
-function putSeekCache({
-    fileId,
-    start,
-    end,
-    buffer
-}) {
-
-    if (
-        !SEEK_CACHE_ENABLED
-    ) {
-        return;
-    }
-
-    if (
-        !buffer ||
-        buffer.length <= 0
-    ) {
-        return;
-    }
-
-    /*
-     * 单个缓存不能超过限制。
-     */
-    if (
-        buffer.length >
-        SEEK_BUFFER_SIZE
-    ) {
-
-        return;
-    }
-
-    /*
-     * 全局淘汰。
-     */
-    evictSeekCache(
-        buffer.length
-    );
-
-    /*
-     * 当前文件淘汰。
-     */
-    evictFileSeekCache(
-        fileId,
-        buffer.length
-    );
-
-    const key =
-        makeSeekCacheKey(
-            fileId,
-            start,
-            end
-        );
-
-    /*
-     * 如果已经存在同范围，
-     * 先删除旧对象。
-     */
-    if (
-        seekCache.has(key)
-    ) {
-
-        removeSeekCache(
-            key
-        );
-    }
-
-    const entry = {
-
-        key,
-
-        fileId,
-
-        start,
-
-        end,
-
-        buffer,
-
-        createdAt:
-            Date.now(),
-
-        lastUsed:
-            Date.now()
-    };
-
-    seekCache.set(
-        key,
-        entry
-    );
-
-    seekCacheBytes +=
-        buffer.length;
-}
-
-/*
-|--------------------------------------------------------------------------
-| 从缓存取出指定 Range
-|--------------------------------------------------------------------------
-*/
-
-function sliceSeekCache(
-    entry,
-    start,
-    end
-) {
-
-    entry.lastUsed =
-        Date.now();
-
-    seekCache.delete(
-        entry.key
-    );
-
-    seekCache.set(
-        entry.key,
-        entry
-    );
-
-    const offset =
-        start -
-        entry.start;
-
-    const length =
-        end -
-        start +
-        1;
-
-    return entry.buffer.subarray(
-        offset,
-        offset + length
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| 获取拖拽缓存
-|--------------------------------------------------------------------------
-|
-| 如果命中：
-|
-|   直接返回。
-|
-| 如果没命中：
-|
-|   向钉钉扩大范围请求。
-|
-|--------------------------------------------------------------------------
-*/
-
-async function getSeekBuffer({
-    manifest,
-    requestedStart,
-    requestedEnd,
-    signal
-}) {
-
-    /*
-     * 先查缓存。
-     */
-    const hit =
-        findCoveringSeekCache(
-            manifest.id,
-            requestedStart,
-            requestedEnd
-        );
-
-    if (hit) {
-
-        return {
-
-            buffer:
-                sliceSeekCache(
-                    hit,
-                    requestedStart,
-                    requestedEnd
-                ),
-
-            fromCache:
-                true
-        };
-    }
-
-    /*
-     * 以请求位置为中心/起点扩大范围。
-     *
-     * 不从文件头开始。
-     */
-    let fetchStart =
-        Math.floor(
-            requestedStart /
-            SEEK_PREFETCH_SIZE
-        ) *
-        SEEK_PREFETCH_SIZE;
-
-    /*
-     * 至少覆盖用户请求。
-     */
-    fetchStart =
-        Math.min(
-            fetchStart,
-            requestedStart
-        );
-
-    let fetchEnd =
-        Math.max(
-            requestedEnd,
-            fetchStart +
-                SEEK_PREFETCH_SIZE -
-                1
-        );
-
-    fetchEnd =
-        Math.min(
-            fetchEnd,
-            manifest.size - 1
-        );
-
-    /*
-     * 控制单次缓冲大小。
-     */
-    if (
-        fetchEnd -
-            fetchStart +
-            1 >
-        SEEK_BUFFER_SIZE
-    ) {
-
-        fetchEnd =
-            Math.min(
-                manifest.size - 1,
-                fetchStart +
-                    SEEK_BUFFER_SIZE -
-                    1
-            );
-    }
-
-    const chunkIndex =
-        Math.floor(
-            fetchStart /
-            manifest.chunkSize
-        );
-
-    const chunk =
-        manifest.chunks[
-            chunkIndex
-        ];
-
-    if (!chunk) {
-
-        throw new Error(
-            `Chunk ${chunkIndex} 不存在`
-        );
-    }
-
-    /*
-     * chunk 内部偏移。
-     */
-    const chunkStart =
-        chunkIndex *
-        manifest.chunkSize;
-
-    const remoteStart =
-        fetchStart -
-        chunkStart;
-
-    const remoteEnd =
-        fetchEnd -
-        chunkStart;
-
-    const buffer =
-        await fetchRemoteBuffer({
-
-            url:
-                chunk.url,
-
-            start:
-                remoteStart,
-
-            end:
-                remoteEnd,
-
-            signal
-        });
-
-    /*
-     * 缓存的是“当前 chunk 的文件绝对位置”。
-     */
-    putSeekCache({
-
-        fileId:
-            manifest.id,
-
-        start:
-            fetchStart,
-
-        end:
-            fetchStart +
-                buffer.length -
-                1,
-
-        buffer
-    });
-
-    /*
-     * 找刚才写入的缓存。
-     */
-    const newHit =
-        findCoveringSeekCache(
-            manifest.id,
-            requestedStart,
-            requestedEnd
-        );
-
-    if (!newHit) {
-
-        /*
-         * 理论上只有缓存被限制淘汰才会发生。
-         *
-         * 直接切 Buffer。
-         */
-        const offset =
-            requestedStart -
-            fetchStart;
-
-        return {
-
-            buffer:
-                buffer.subarray(
-                    offset,
-                    offset +
-                        (
-                            requestedEnd -
-                            requestedStart +
-                            1
-                        )
-                ),
-
-            fromCache:
-                false
-        };
-    }
-
-    return {
-
-        buffer:
-            sliceSeekCache(
-                newHit,
-                requestedStart,
-                requestedEnd
-            ),
-
-        fromCache:
-            false
-    };
-}
-
-/*
-|--------------------------------------------------------------------------
-| 直接流式发送 Range
-|--------------------------------------------------------------------------
-|
-| 首开使用。
-|
-| 绝不进入 seek cache。
+| 中间不生成完整 Buffer。
 |
 |--------------------------------------------------------------------------
 */
@@ -1801,7 +1333,8 @@ async function streamRemoteRange({
                 .body
                 .getReader();
 
-        let total = 0;
+        let total =
+            0;
 
         try {
 
@@ -1816,7 +1349,9 @@ async function streamRemoteRange({
                 ) {
 
                     try {
+
                         await reader.cancel();
+
                     } catch {}
 
                     return;
@@ -1834,8 +1369,9 @@ async function streamRemoteRange({
 
                 if (
                     !value ||
-                    value.byteLength === 0
+                    value.byteLength <= 0
                 ) {
+
                     continue;
                 }
 
@@ -1843,7 +1379,7 @@ async function streamRemoteRange({
                     expectedLength -
                     total;
 
-                const length =
+                const writeLength =
                     Math.min(
                         remaining,
                         value.byteLength
@@ -1853,11 +1389,11 @@ async function streamRemoteRange({
                     Buffer.from(
                         value.buffer,
                         value.byteOffset,
-                        length
+                        writeLength
                     );
 
                 total +=
-                    length;
+                    writeLength;
 
                 if (
                     !response.write(
@@ -1872,7 +1408,6 @@ async function streamRemoteRange({
                                 'drain',
                                 resolve
                             );
-
                         }
                     );
                 }
@@ -1881,19 +1416,24 @@ async function streamRemoteRange({
         } finally {
 
             try {
+
                 reader.releaseLock();
+
             } catch {}
         }
 
         if (
-            total !== expectedLength &&
+            total !==
+                expectedLength &&
             !signal.aborted
         ) {
 
             throw new Error(
-                `DingTalk Range 数据长度异常：` +
-                `期望 ${expectedLength}，` +
-                `实际 ${total}`
+                `DingTalk Range 长度异常：期望 ${
+                    expectedLength
+                }，实际 ${
+                    total
+                }`
             );
         }
 
@@ -1905,12 +1445,12 @@ async function streamRemoteRange({
 
 /*
 |--------------------------------------------------------------------------
-| 跨 chunk 流式
+| Direct stream across chunks
 |--------------------------------------------------------------------------
 |
-| 首开/正常播放：
+| 首次打开 / 正常播放：
 |
-| 仍然只请求实际需要的数据。
+| 永远优先使用这里。
 |
 |--------------------------------------------------------------------------
 */
@@ -2029,13 +1569,789 @@ async function streamRangeDirect({
 
 /*
 |--------------------------------------------------------------------------
-| 拖拽专用流
+| Seek Cache
+|--------------------------------------------------------------------------
+*/
+
+const seekCache =
+    new Map();
+
+let seekCacheBytes =
+    0;
+
+/*
+|--------------------------------------------------------------------------
+| Cache key
+|--------------------------------------------------------------------------
+*/
+
+function makeSeekCacheKey(
+    fileId,
+    start,
+    end
+) {
+
+    return (
+        `${fileId}:${start}:${end}`
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Remove cache
+|--------------------------------------------------------------------------
+*/
+
+function removeSeekCache(
+    key
+) {
+
+    const entry =
+        seekCache.get(
+            key
+        );
+
+    if (!entry) {
+        return;
+    }
+
+    seekCache.delete(
+        key
+    );
+
+    seekCacheBytes =
+        Math.max(
+            0,
+            seekCacheBytes -
+                entry.buffer.length
+        );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Global cache eviction
+|--------------------------------------------------------------------------
+*/
+
+function evictSeekCache(
+    requiredBytes = 0
+) {
+
+    while (
+        seekCacheBytes +
+            requiredBytes >
+        MAX_SEEK_CACHE_BYTES
+    ) {
+
+        const iterator =
+            seekCache
+                .entries()
+                .next();
+
+        if (
+            iterator.done
+        ) {
+
+            break;
+        }
+
+        const [
+            key
+        ] =
+            iterator.value;
+
+        removeSeekCache(
+            key
+        );
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| File cache bytes
+|--------------------------------------------------------------------------
+*/
+
+function getFileSeekCacheBytes(
+    fileId
+) {
+
+    let total =
+        0;
+
+    for (
+        const entry
+        of seekCache.values()
+    ) {
+
+        if (
+            entry.fileId ===
+            fileId
+        ) {
+
+            total +=
+                entry.buffer.length;
+        }
+    }
+
+    return total;
+}
+
+/*
+|--------------------------------------------------------------------------
+| File cache eviction
+|--------------------------------------------------------------------------
+*/
+
+function evictFileSeekCache(
+    fileId,
+    requiredBytes = 0
+) {
+
+    while (
+        getFileSeekCacheBytes(
+            fileId
+        ) +
+        requiredBytes >
+        MAX_SEEK_CACHE_PER_FILE
+    ) {
+
+        let oldest =
+            null;
+
+        for (
+            const entry
+            of seekCache.values()
+        ) {
+
+            if (
+                entry.fileId !==
+                fileId
+            ) {
+
+                continue;
+            }
+
+            if (
+                !oldest ||
+                entry.lastUsed <
+                    oldest.lastUsed
+            ) {
+
+                oldest =
+                    entry;
+            }
+        }
+
+        if (!oldest) {
+            break;
+        }
+
+        removeSeekCache(
+            oldest.key
+        );
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Find covering cache
+|--------------------------------------------------------------------------
+*/
+
+function findCoveringSeekCache(
+    fileId,
+    start,
+    end
+) {
+
+    for (
+        const entry
+        of seekCache.values()
+    ) {
+
+        if (
+            entry.fileId !==
+            fileId
+        ) {
+
+            continue;
+        }
+
+        if (
+            entry.start <= start &&
+            entry.end >= end
+        ) {
+
+            entry.lastUsed =
+                Date.now();
+
+            /*
+             * LRU move to end.
+             */
+            seekCache.delete(
+                entry.key
+            );
+
+            seekCache.set(
+                entry.key,
+                entry
+            );
+
+            return entry;
+        }
+    }
+
+    return null;
+}
+
+/*
+|--------------------------------------------------------------------------
+| Put cache
+|--------------------------------------------------------------------------
+*/
+
+function putSeekCache({
+    fileId,
+    start,
+    end,
+    buffer
+}) {
+
+    if (
+        !SEEK_CACHE_ENABLED
+    ) {
+
+        return;
+    }
+
+    if (
+        MAX_SEEK_CACHE_BYTES <= 0 ||
+        MAX_SEEK_CACHE_PER_FILE <= 0
+    ) {
+
+        return;
+    }
+
+    if (
+        !buffer ||
+        buffer.length <= 0
+    ) {
+
+        return;
+    }
+
+    if (
+        buffer.length >
+        SEEK_BUFFER_SIZE
+    ) {
+
+        return;
+    }
+
+    /*
+     * 先删除同文件旧缓存。
+     */
+    const key =
+        makeSeekCacheKey(
+            fileId,
+            start,
+            end
+        );
+
+    if (
+        seekCache.has(key)
+    ) {
+
+        removeSeekCache(
+            key
+        );
+    }
+
+    /*
+     * 当前文件限制。
+     */
+    evictFileSeekCache(
+        fileId,
+        buffer.length
+    );
+
+    /*
+     * 全局限制。
+     */
+    evictSeekCache(
+        buffer.length
+    );
+
+    /*
+     * 如果即使清理后也放不下，
+     * 就不缓存。
+     */
+    if (
+        seekCacheBytes +
+            buffer.length >
+        MAX_SEEK_CACHE_BYTES
+    ) {
+
+        return;
+    }
+
+    if (
+        getFileSeekCacheBytes(
+            fileId
+        ) +
+        buffer.length >
+        MAX_SEEK_CACHE_PER_FILE
+    ) {
+
+        return;
+    }
+
+    const now =
+        Date.now();
+
+    const entry = {
+
+        key,
+
+        fileId,
+
+        start,
+
+        end,
+
+        buffer,
+
+        createdAt:
+            now,
+
+        lastUsed:
+            now
+    };
+
+    seekCache.set(
+        key,
+        entry
+    );
+
+    seekCacheBytes +=
+        buffer.length;
+}
+
+/*
+|--------------------------------------------------------------------------
+| Slice cache
+|--------------------------------------------------------------------------
+*/
+
+function sliceSeekCache(
+    entry,
+    start,
+    end
+) {
+
+    entry.lastUsed =
+        Date.now();
+
+    seekCache.delete(
+        entry.key
+    );
+
+    seekCache.set(
+        entry.key,
+        entry
+    );
+
+    const offset =
+        start -
+        entry.start;
+
+    const length =
+        end -
+        start +
+        1;
+
+    return entry.buffer.subarray(
+        offset,
+        offset + length
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Fetch seek buffer
 |--------------------------------------------------------------------------
 |
-| 与首开完全不同。
+| 注意：
 |
-| 这里允许使用短期内存缓存。
+| 这个函数只用于 seek。
 |
+| 首次打开绝对不会调用。
+|
+|--------------------------------------------------------------------------
+*/
+
+async function getSeekBuffer({
+    manifest,
+    requestedStart,
+    requestedEnd,
+    signal
+}) {
+
+    /*
+     * 先找缓存。
+     */
+    const cached =
+        findCoveringSeekCache(
+            manifest.id,
+            requestedStart,
+            requestedEnd
+        );
+
+    if (cached) {
+
+        return {
+
+            buffer:
+                sliceSeekCache(
+                    cached,
+                    requestedStart,
+                    requestedEnd
+                ),
+
+            fromCache:
+                true
+        };
+    }
+
+    /*
+     * 计算预取范围。
+     *
+     * 从用户 seek 位置附近开始，
+     * 而不是从文件头开始。
+     */
+    let fetchStart =
+        Math.floor(
+            requestedStart /
+            SEEK_PREFETCH_SIZE
+        ) *
+        SEEK_PREFETCH_SIZE;
+
+    fetchStart =
+        Math.max(
+            0,
+            Math.min(
+                fetchStart,
+                requestedStart
+            )
+        );
+
+    let fetchEnd =
+        Math.max(
+            requestedEnd,
+            fetchStart +
+                SEEK_PREFETCH_SIZE -
+                1
+        );
+
+    fetchEnd =
+        Math.min(
+            manifest.size - 1,
+            fetchEnd
+        );
+
+    /*
+     * 控制最大 buffer。
+     */
+    if (
+        fetchEnd -
+            fetchStart +
+            1 >
+        SEEK_BUFFER_SIZE
+    ) {
+
+        fetchEnd =
+            Math.min(
+                manifest.size - 1,
+                fetchStart +
+                    SEEK_BUFFER_SIZE -
+                    1
+            );
+    }
+
+    /*
+     * 一个 seek buffer 尽量限制在一个 chunk 内。
+     */
+    const chunkIndex =
+        Math.floor(
+            fetchStart /
+            manifest.chunkSize
+        );
+
+    const chunk =
+        manifest.chunks[
+            chunkIndex
+        ];
+
+    if (!chunk) {
+
+        throw new Error(
+            `Chunk ${chunkIndex} 不存在`
+        );
+    }
+
+    const chunkStart =
+        chunkIndex *
+        manifest.chunkSize;
+
+    const chunkEnd =
+        Math.min(
+            manifest.size - 1,
+            chunkStart +
+                manifest.chunkSize -
+                1
+        );
+
+    fetchEnd =
+        Math.min(
+            fetchEnd,
+            chunkEnd
+        );
+
+    const remoteStart =
+        fetchStart -
+        chunkStart;
+
+    const remoteEnd =
+        fetchEnd -
+        chunkStart;
+
+    const buffer =
+        await fetchRemoteBuffer({
+
+            url:
+                chunk.url,
+
+            start:
+                remoteStart,
+
+            end:
+                remoteEnd,
+
+            signal
+        });
+
+    /*
+     * 放进 seek cache。
+     */
+    putSeekCache({
+
+        fileId:
+            manifest.id,
+
+        start:
+            fetchStart,
+
+        end:
+            fetchStart +
+                buffer.length -
+                1,
+
+        buffer
+    });
+
+    /*
+     * 再查一次。
+     */
+    const newCached =
+        findCoveringSeekCache(
+            manifest.id,
+            requestedStart,
+            requestedEnd
+        );
+
+    if (newCached) {
+
+        return {
+
+            buffer:
+                sliceSeekCache(
+                    newCached,
+                    requestedStart,
+                    requestedEnd
+                ),
+
+            fromCache:
+                false
+        };
+    }
+
+    /*
+     * 如果 cache 因内存限制没放进去，
+     * 直接使用本次 buffer。
+     */
+    const offset =
+        requestedStart -
+        fetchStart;
+
+    return {
+
+        buffer:
+            buffer.subarray(
+                offset,
+                offset +
+                    (
+                        requestedEnd -
+                        requestedStart +
+                        1
+                    )
+            ),
+
+        fromCache:
+            false
+    };
+}
+
+/*
+|--------------------------------------------------------------------------
+| Fetch remote buffer
+|--------------------------------------------------------------------------
+|
+| 仅 seek 使用。
+|
+|--------------------------------------------------------------------------
+*/
+
+async function fetchRemoteBuffer({
+    url,
+    start,
+    end,
+    signal
+}) {
+
+    const remote =
+        await fetchDingTalkRange({
+
+            url,
+
+            start,
+
+            end,
+
+            signal
+        });
+
+    try {
+
+        if (
+            !remote.response.body
+        ) {
+
+            throw new Error(
+                'DingTalk response body 不存在'
+            );
+        }
+
+        const reader =
+            remote.response
+                .body
+                .getReader();
+
+        const parts = [];
+
+        let total =
+            0;
+
+        try {
+
+            while (true) {
+
+                if (
+                    signal?.aborted
+                ) {
+
+                    try {
+
+                        await reader.cancel();
+
+                    } catch {}
+
+                    throw new Error(
+                        'Request aborted'
+                    );
+                }
+
+                const {
+                    done,
+                    value
+                } =
+                    await reader.read();
+
+                if (done) {
+                    break;
+                }
+
+                if (
+                    value &&
+                    value.byteLength > 0
+                ) {
+
+                    parts.push(
+                        Buffer.from(
+                            value
+                        )
+                    );
+
+                    total +=
+                        value.byteLength;
+                }
+            }
+
+        } finally {
+
+            try {
+
+                reader.releaseLock();
+
+            } catch {}
+        }
+
+        const buffer =
+            Buffer.concat(
+                parts,
+                total
+            );
+
+        const expectedLength =
+            end -
+            start +
+            1;
+
+        if (
+            buffer.length !==
+            expectedLength
+        ) {
+
+            throw new Error(
+                `DingTalk Range 长度异常：期望 ${
+                    expectedLength
+                }，实际 ${
+                    buffer.length
+                }`
+            );
+        }
+
+        return buffer;
+
+    } finally {
+
+        remote.release();
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Seek streaming
 |--------------------------------------------------------------------------
 */
 
@@ -2047,9 +2363,6 @@ async function streamSeekRange({
     signal
 }) {
 
-    /*
-     * 当前拖拽范围尽量在一个 chunk 内处理。
-     */
     const firstChunk =
         Math.floor(
             start /
@@ -2062,13 +2375,6 @@ async function streamSeekRange({
             manifest.chunkSize
         );
 
-    /*
-     * 如果跨 chunk：
-     *
-     * 每一个 chunk 分开处理。
-     *
-     * 不把多个 chunk 全部放进 RAM。
-     */
     for (
         let index =
             firstChunk;
@@ -2124,7 +2430,9 @@ async function streamSeekRange({
             );
 
         /*
-         * 只有真正拖拽才走缓存。
+         * 注意：
+         *
+         * seek cache 只缓存实际 seek 附近的数据。
          */
         const result =
             await getSeekBuffer({
@@ -2161,7 +2469,6 @@ async function streamSeekRange({
                         'drain',
                         resolve
                     );
-
                 }
             );
         }
@@ -2179,7 +2486,7 @@ async function streamSeekRange({
 
 /*
 |--------------------------------------------------------------------------
-| 文件 URL
+| File URL
 |--------------------------------------------------------------------------
 */
 
@@ -2196,13 +2503,16 @@ function buildFileUrl(
 
 /*
 |--------------------------------------------------------------------------
-| 创建文件
+| Create
 |--------------------------------------------------------------------------
 */
 
 app.post(
     '/api/videos',
-    async (req, res) => {
+    async (
+        req,
+        res
+    ) => {
 
         try {
 
@@ -2210,33 +2520,41 @@ app.post(
                 filename,
                 size,
                 contentType
-            } = req.body;
+            } =
+                req.body;
 
             if (
-                typeof filename !== 'string' ||
+                typeof filename !==
+                    'string' ||
                 !filename.trim()
             ) {
 
                 return res
                     .status(400)
                     .json({
+
                         success:
                             false,
+
                         error:
                             'filename 参数错误'
                     });
             }
 
             if (
-                !Number.isSafeInteger(size) ||
+                !Number.isSafeInteger(
+                    size
+                ) ||
                 size <= 0
             ) {
 
                 return res
                     .status(400)
                     .json({
+
                         success:
                             false,
+
                         error:
                             'size 参数错误'
                     });
@@ -2262,7 +2580,13 @@ app.post(
             );
 
             console.log(
-                `[CREATE] ${manifest.filename} | ${manifest.size} bytes`
+                `[CREATE] ${
+                    manifest.filename
+                } | ${
+                    manifest.size
+                } bytes | ${
+                    manifest.contentType
+                }`
             );
 
             return res.json({
@@ -2314,13 +2638,16 @@ app.post(
 
 /*
 |--------------------------------------------------------------------------
-| 查询文件
+| Query
 |--------------------------------------------------------------------------
 */
 
 app.get(
     '/api/videos/:id',
-    async (req, res) => {
+    async (
+        req,
+        res
+    ) => {
 
         const manifest =
             await getManifest(
@@ -2347,7 +2674,8 @@ app.get(
             )
                 .map(Number)
                 .sort(
-                    (a, b) => a - b
+                    (a, b) =>
+                        a - b
                 );
 
         return res.json({
@@ -2386,14 +2714,19 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| 上传 chunk
+| Upload chunk
 |--------------------------------------------------------------------------
 */
 
 app.post(
     '/api/videos/:id/chunks/:index',
-    upload.single('picFile'),
-    async (req, res) => {
+    upload.single(
+        'picFile'
+    ),
+    async (
+        req,
+        res
+    ) => {
 
         let tempFile =
             req.file?.path;
@@ -2423,7 +2756,9 @@ app.post(
             }
 
             const manifest =
-                await getManifest(id);
+                await getManifest(
+                    id
+                );
 
             if (!manifest) {
 
@@ -2440,9 +2775,12 @@ app.post(
             }
 
             if (
-                !Number.isInteger(index) ||
+                !Number.isInteger(
+                    index
+                ) ||
                 index < 0 ||
-                index >= manifest.chunkCount
+                index >=
+                    manifest.chunkCount
             ) {
 
                 return res
@@ -2459,20 +2797,21 @@ app.post(
 
             const expectedSize =
                 index ===
-                manifest.chunkCount - 1
+                    manifest.chunkCount - 1
 
                     ?
 
                     manifest.size -
                     index *
-                    manifest.chunkSize
+                        manifest.chunkSize
 
                     :
 
                     manifest.chunkSize;
 
             if (
-                req.file.size !== expectedSize
+                req.file.size !==
+                expectedSize
             ) {
 
                 return res
@@ -2483,24 +2822,36 @@ app.post(
                             false,
 
                         error:
-                            `chunk 大小错误：期望 ${expectedSize}，实际 ${req.file.size}`
+                            `chunk 大小错误：期望 ${
+                                expectedSize
+                            }，实际 ${
+                                req.file.size
+                            }`
                     });
             }
 
+            /*
+             * 已经上传。
+             */
             if (
                 manifest.chunks[index]
             ) {
 
                 const existing =
-                    manifest.chunks[index];
+                    manifest.chunks[
+                        index
+                    ];
 
                 try {
+
                     await fs.unlink(
                         tempFile
                     );
+
                 } catch {}
 
-                tempFile = null;
+                tempFile =
+                    null;
 
                 return res.json({
 
@@ -2521,19 +2872,34 @@ app.post(
             }
 
             console.log(
-                `[UPLOAD] ${manifest.filename} | chunk ${index}/${manifest.chunkCount - 1} | ${req.file.size} bytes`
+                `[UPLOAD] ${
+                    manifest.filename
+                } | chunk ${
+                    index
+                }/${
+                    manifest.chunkCount - 1
+                } | ${
+                    req.file.size
+                } bytes`
             );
 
             /*
-             * 上传到钉钉内部仍然是 jpg。
+             * DingTalk 文件名。
              *
-             * 原始文件扩展名只用于我们自己的 /file/ URL。
+             * 保持内部上传接口要求的方式，
+             * 但 MIME 不再强制 JPEG。
              */
             const dingFilename =
                 `chunk_${
                     String(index)
-                        .padStart(8, '0')
-                }.jpg`;
+                        .padStart(
+                            8,
+                            '0'
+                        )
+                }${
+                    manifest.extension ||
+                    '.bin'
+                }`;
 
             const result =
                 await uploadChunkToDingTalk({
@@ -2542,10 +2908,15 @@ app.post(
                         tempFile,
 
                     filename:
-                        dingFilename
+                        dingFilename,
+
+                    contentType:
+                        manifest.contentType
                 });
 
-            manifest.chunks[index] = {
+            manifest.chunks[
+                index
+            ] = {
 
                 index,
 
@@ -2565,12 +2936,15 @@ app.post(
             );
 
             try {
+
                 await fs.unlink(
                     tempFile
                 );
+
             } catch {}
 
-            tempFile = null;
+            tempFile =
+                null;
 
             return res.json({
 
@@ -2593,12 +2967,16 @@ app.post(
                 error
             );
 
-            if (tempFile) {
+            if (
+                tempFile
+            ) {
 
                 try {
+
                     await fs.unlink(
                         tempFile
                     );
+
                 } catch {}
             }
 
@@ -2618,13 +2996,16 @@ app.post(
 
 /*
 |--------------------------------------------------------------------------
-| 完成上传
+| Complete
 |--------------------------------------------------------------------------
 */
 
 app.post(
     '/api/videos/:id/complete',
-    async (req, res) => {
+    async (
+        req,
+        res
+    ) => {
 
         try {
 
@@ -2651,7 +3032,8 @@ app.post(
 
             for (
                 let i = 0;
-                i < manifest.chunkCount;
+                i <
+                    manifest.chunkCount;
                 i++
             ) {
 
@@ -2659,7 +3041,9 @@ app.post(
                     !manifest.chunks[i]
                 ) {
 
-                    missing.push(i);
+                    missing.push(
+                        i
+                    );
                 }
             }
 
@@ -2697,6 +3081,16 @@ app.post(
                     manifest
                 );
 
+            console.log(
+                `[READY] ${
+                    manifest.filename
+                } | ${
+                    manifest.size
+                } bytes | ${
+                    manifest.contentType
+                }`
+            );
+
             return res.json({
 
                 success:
@@ -2722,6 +3116,9 @@ app.post(
                 videoUrl:
                     fileUrl,
 
+                /*
+                 * 旧接口兼容。
+                 */
                 legacyUrl:
                     `/video/${manifest.id}`
             });
@@ -2749,7 +3146,7 @@ app.post(
 
 /*
 |--------------------------------------------------------------------------
-| 从 /file/xxx.ext 获取 manifest
+| Parse /file/xxx.ext
 |--------------------------------------------------------------------------
 */
 
@@ -2791,9 +3188,13 @@ async function getManifestFromFileRequest(
         filename;
 
     const dot =
-        filename.lastIndexOf('.');
+        filename.lastIndexOf(
+            '.'
+        );
 
-    if (dot > 0) {
+    if (
+        dot > 0
+    ) {
 
         id =
             filename.slice(
@@ -2803,47 +3204,93 @@ async function getManifestFromFileRequest(
     }
 
     if (
-        !isValidId(id)
+        !isValidId(
+            id
+        )
     ) {
 
         return null;
     }
 
-    return getManifest(id);
+    return getManifest(
+        id
+    );
 }
 
 /*
 |--------------------------------------------------------------------------
-| 文件请求
+| Common response headers
+|--------------------------------------------------------------------------
+*/
+
+function getFileHeaders(
+    manifest
+) {
+
+    const filename =
+        sanitizeFilename(
+            manifest.filename
+        );
+
+    const encodedFilename =
+        encodeURIComponent(
+            filename
+        );
+
+    return {
+
+        'Content-Type':
+            manifest.contentType ||
+            'application/octet-stream',
+
+        'Accept-Ranges':
+            'bytes',
+
+        'Content-Disposition':
+            `inline; filename*=UTF-8''${encodedFilename}`,
+
+        'X-Content-Type-Options':
+            'nosniff',
+
+        /*
+         * 不禁止浏览器本身的媒体缓冲。
+         */
+        'Cache-Control':
+            'public, max-age=3600'
+    };
+}
+
+/*
+|--------------------------------------------------------------------------
+| Main file handler
+|--------------------------------------------------------------------------
+|
+| /file/xxx.mp4
+| /video/uuid
+|
+| 都走这里。
+|
 |--------------------------------------------------------------------------
 */
 
 async function handleFileRequest(
     req,
-    res
+    res,
+    manifest
 ) {
 
-    const manifest =
-        await getManifestFromFileRequest(
-            req
-        );
-
-    if (!manifest) {
+    if (
+        !manifest
+    ) {
 
         return res
             .status(404)
-            .json({
-
-                success:
-                    false,
-
-                error:
-                    'Not Found'
-            });
+            .end();
     }
 
     if (
-        manifest.status !== 'ready'
+        manifest.status !==
+        'ready'
     ) {
 
         return res
@@ -2858,38 +3305,47 @@ async function handleFileRequest(
             });
     }
 
+    /*
+     * HEAD
+     */
     if (
-        req.method === 'HEAD'
+        req.method ===
+        'HEAD'
     ) {
 
         return res
             .status(200)
             .set({
 
-                'Content-Type':
-                    manifest.contentType,
+                ...getFileHeaders(
+                    manifest
+                ),
 
                 'Content-Length':
                     String(
                         manifest.size
-                    ),
-
-                'Accept-Ranges':
-                    'bytes',
-
-                'Cache-Control':
-                    'no-cache'
+                    )
             })
             .end();
     }
 
+    /*
+     * Client abort controller.
+     */
     const controller =
         new AbortController();
+
+    let finished =
+        false;
 
     const onClose =
         () => {
 
+            /*
+             * response close 可能在正常 end 后触发。
+             */
             if (
+                !finished &&
                 !res.writableEnded
             ) {
 
@@ -2925,56 +3381,26 @@ async function handleFileRequest(
                 .end();
         }
 
-        const filename =
-            sanitizeFilename(
-                manifest.filename
-            );
-
-        const encodedFilename =
-            encodeURIComponent(
-                filename
-            );
-
-        const contentType =
-            manifest.contentType ||
-            'application/octet-stream';
-
-        const baseHeaders = {
-
-            'Content-Type':
-                contentType,
-
-            'Accept-Ranges':
-                'bytes',
-
-            'Content-Disposition':
-                `inline; filename*=UTF-8''${encodedFilename}`,
-
-            'X-Content-Type-Options':
-                'nosniff',
-
-            'Cache-Control':
-                'no-cache, no-store, must-revalidate',
-
-            'Pragma':
-                'no-cache',
-
-            'Expires':
-                '0'
-        };
-
         /*
-         * 没有 Range。
+         * ------------------------------------------------------------
+         * 没有 Range
+         * ------------------------------------------------------------
          *
-         * 直接完整流式。
+         * 完整文件直接流式。
+         *
+         * 这不是把整个文件一次性下载。
          */
-        if (!range) {
+        if (
+            !range
+        ) {
 
             res
                 .status(200)
                 .set({
 
-                    ...baseHeaders,
+                    ...getFileHeaders(
+                        manifest
+                    ),
 
                     'Content-Length':
                         String(
@@ -2999,34 +3425,25 @@ async function handleFileRequest(
                     controller.signal
             });
 
+            finished =
+                true;
+
             return;
         }
 
         /*
-         * 判断是不是“拖拽/seek”。
-         *
-         * 首次打开一般从 0 开始。
-         *
-         * 只有：
-         *
-         * 1. start > 0
-         *
-         * 或
-         *
-         * 2. Range 明显跳跃
-         *
-         * 才使用 seek cache。
-         *
-         * 这样首开不会触碰缓存系统。
+         * ------------------------------------------------------------
+         * Range
+         * ------------------------------------------------------------
          */
-        const isSeekRequest =
-            range.start > 0;
 
         res
             .status(206)
             .set({
 
-                ...baseHeaders,
+                ...getFileHeaders(
+                    manifest
+                ),
 
                 'Content-Length':
                     String(
@@ -3043,8 +3460,38 @@ async function handleFileRequest(
                     }`
             });
 
-        console.log(
+        /*
+         * 重要：
+         *
+         * 不再使用：
+         *
+         *     range.start > 0
+         *       === seek
+         *
+         * 因为浏览器首次打开视频时，
+         * 完全可能直接请求非 0 Range。
+         *
+         * 所以：
+         *
+         * 默认所有 Range 都直接流。
+         *
+         * 只有明确满足“短 Range seek”
+         * 时才允许 cache。
+         *
+         * 这里用一个非常保守的条件：
+         *
+         * start > 0
+         * && 请求长度 <= SEEK_BUFFER_SIZE
+         *
+         * 这样普通播放的大 Range 不会进入 Buffer。
+         */
+        const useSeekCache =
+            SEEK_CACHE_ENABLED &&
+            range.start > 0 &&
+            range.length <=
+                SEEK_BUFFER_SIZE;
 
+        console.log(
             `[RANGE] ${
                 manifest.filename
             } | ${
@@ -3054,25 +3501,17 @@ async function handleFileRequest(
             } | ${
                 range.length
             } bytes | ${
-                isSeekRequest
-                    ? 'SEEK'
-                    : 'START'
+                useSeekCache
+                    ? 'SEEK-CACHE'
+                    : 'DIRECT'
             }`
         );
 
-        /*
-         * 首次 Range：
-         *
-         * 直接流式。
-         *
-         * 不缓存。
-         */
         if (
-            !isSeekRequest ||
-            !SEEK_CACHE_ENABLED
+            useSeekCache
         ) {
 
-            await streamRangeDirect({
+            await streamSeekRange({
 
                 manifest,
 
@@ -3089,30 +3528,39 @@ async function handleFileRequest(
                     controller.signal
             });
 
-            return;
+        } else {
+
+            /*
+             * 首次播放最重要的路径：
+             *
+             * 不缓存。
+             * 不 Buffer。
+             * 不等待。
+             *
+             * 直接：
+             *
+             * DingTalk → Node → Browser
+             */
+            await streamRangeDirect({
+
+                manifest,
+
+                start:
+                    range.start,
+
+                end:
+                    range.end,
+
+                response:
+                    res,
+
+                signal:
+                    controller.signal
+            });
         }
 
-        /*
-         * 拖拽：
-         *
-         * 专用 Range 缓冲。
-         */
-        await streamSeekRange({
-
-            manifest,
-
-            start:
-                range.start,
-
-            end:
-                range.end,
-
-            response:
-                res,
-
-            signal:
-                controller.signal
-        });
+        finished =
+            true;
 
     } catch (error) {
 
@@ -3149,9 +3597,13 @@ async function handleFileRequest(
             !res.destroyed
         ) {
 
-            res.destroy(
-                error
-            );
+            try {
+
+                res.destroy(
+                    error
+                );
+
+            } catch {}
         }
 
     } finally {
@@ -3171,7 +3623,10 @@ async function handleFileRequest(
 
 app.use(
     '/file',
-    async (req, res) => {
+    async (
+        req,
+        res
+    ) => {
 
         if (
             req.method !== 'GET' &&
@@ -3188,285 +3643,77 @@ app.use(
                 .end();
         }
 
+        const manifest =
+            await getManifestFromFileRequest(
+                req
+            );
+
         return handleFileRequest(
             req,
-            res
+            res,
+            manifest
         );
     }
 );
 
 /*
 |--------------------------------------------------------------------------
-| 兼容旧 /video/:id
+| Legacy /video/:id
 |--------------------------------------------------------------------------
 */
 
-async function handleLegacyVideo(
-    req,
-    res
-) {
-
-    const manifest =
-        await getManifest(
-            req.params.id
-        );
-
-    if (!manifest) {
-
-        return res
-            .status(404)
-            .end();
-    }
-
-    if (
-        manifest.status !== 'ready'
-    ) {
-
-        return res
-            .status(409)
-            .end();
-    }
-
-    const controller =
-        new AbortController();
-
-    const onClose =
-        () => {
-
-            if (
-                !res.writableEnded
-            ) {
-
-                controller.abort();
-            }
-        };
-
-    res.once(
-        'close',
-        onClose
-    );
-
-    try {
-
-        let range;
-
-        try {
-
-            range =
-                parseRange(
-                    req.headers.range,
-                    manifest.size
-                );
-
-        } catch {
-
-            return res
-                .status(416)
-                .set(
-                    'Content-Range',
-                    `bytes */${manifest.size}`
-                )
-                .end();
-        }
-
-        if (!range) {
-
-            res
-                .status(200)
-                .set({
-
-                    'Content-Type':
-                        manifest.contentType,
-
-                    'Content-Length':
-                        String(
-                            manifest.size
-                        ),
-
-                    'Accept-Ranges':
-                        'bytes',
-
-                    'Cache-Control':
-                        'no-cache'
-                });
-
-            await streamRangeDirect({
-
-                manifest,
-
-                start:
-                    0,
-
-                end:
-                    manifest.size - 1,
-
-                response:
-                    res,
-
-                signal:
-                    controller.signal
-            });
-
-            return;
-        }
-
-        res
-            .status(206)
-            .set({
-
-                'Content-Type':
-                    manifest.contentType,
-
-                'Content-Length':
-                    String(
-                        range.length
-                    ),
-
-                'Content-Range':
-                    `bytes ${
-                        range.start
-                    }-${
-                        range.end
-                    }/${
-                        manifest.size
-                    }`,
-
-                'Accept-Ranges':
-                    'bytes',
-
-                'Cache-Control':
-                    'no-cache'
-            });
-
-        if (
-            range.start > 0 &&
-            SEEK_CACHE_ENABLED
-        ) {
-
-            await streamSeekRange({
-
-                manifest,
-
-                start:
-                    range.start,
-
-                end:
-                    range.end,
-
-                response:
-                    res,
-
-                signal:
-                    controller.signal
-            });
-
-        } else {
-
-            await streamRangeDirect({
-
-                manifest,
-
-                start:
-                    range.start,
-
-                end:
-                    range.end,
-
-                response:
-                    res,
-
-                signal:
-                    controller.signal
-            });
-        }
-
-    } catch (error) {
-
-        if (
-            controller.signal.aborted
-        ) {
-
-            return;
-        }
-
-        console.error(
-            '[VIDEO ERROR]',
-            error
-        );
-
-        if (
-            !res.headersSent
-        ) {
-
-            res
-                .status(500)
-                .end();
-
-        } else if (
-            !res.destroyed
-        ) {
-
-            res.destroy(error);
-        }
-
-    } finally {
-
-        res.off(
-            'close',
-            onClose
-        );
-    }
-}
-
 app.get(
     '/video/:id',
-    handleLegacyVideo
-);
-
-app.head(
-    '/video/:id',
-    async (req, res) => {
+    async (
+        req,
+        res
+    ) => {
 
         const manifest =
             await getManifest(
                 req.params.id
             );
 
-        if (!manifest) {
+        return handleFileRequest(
+            req,
+            res,
+            manifest
+        );
+    }
+);
 
-            return res
-                .status(404)
-                .end();
-        }
+app.head(
+    '/video/:id',
+    async (
+        req,
+        res
+    ) => {
 
-        return res
-            .status(200)
-            .set({
+        const manifest =
+            await getManifest(
+                req.params.id
+            );
 
-                'Content-Type':
-                    manifest.contentType,
-
-                'Content-Length':
-                    String(
-                        manifest.size
-                    ),
-
-                'Accept-Ranges':
-                    'bytes'
-            })
-            .end();
+        return handleFileRequest(
+            req,
+            res,
+            manifest
+        );
     }
 );
 
 /*
 |--------------------------------------------------------------------------
-| 状态
+| Status
 |--------------------------------------------------------------------------
 */
 
 app.get(
     '/api/status',
-    (req, res) => {
+    (
+        req,
+        res
+    ) => {
 
         const memory =
             process.memoryUsage();
@@ -3478,11 +3725,20 @@ app.get(
 
             architecture: {
 
+                upload:
+                    'CHUNKED',
+
+                storage:
+                    'MANIFEST_ONLY',
+
                 firstOpen:
                     'DIRECT_STREAM',
 
+                range:
+                    'DIRECT_STREAM',
+
                 seek:
-                    'RANGE_MEMORY_BUFFER',
+                    'OPTIONAL_SMALL_MEMORY_CACHE',
 
                 diskCache:
                     false,
@@ -3490,14 +3746,8 @@ app.get(
                 fullFileMemoryCache:
                     false,
 
-                range:
-                    true,
-
-                status206:
-                    true,
-
-                directStreaming:
-                    true
+                remoteRange:
+                    '206_ONLY'
             },
 
             chunkSize:
@@ -3555,13 +3805,16 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| 首页
+| Root
 |--------------------------------------------------------------------------
 */
 
 app.get(
     '/',
-    (req, res) => {
+    (
+        req,
+        res
+    ) => {
 
         return res.sendFile(
             path.resolve(
@@ -3578,7 +3831,10 @@ app.get(
 */
 
 app.use(
-    (req, res) => {
+    (
+        req,
+        res
+    ) => {
 
         return res
             .status(404)
@@ -3595,7 +3851,7 @@ app.use(
 
 /*
 |--------------------------------------------------------------------------
-| 全局错误
+| Global error
 |--------------------------------------------------------------------------
 */
 
@@ -3616,7 +3872,9 @@ app.use(
             res.headersSent
         ) {
 
-            return next(error);
+            return next(
+                error
+            );
         }
 
         return res
@@ -3635,7 +3893,7 @@ app.use(
 
 /*
 |--------------------------------------------------------------------------
-| 定期打印缓存状态
+| Cache monitor
 |--------------------------------------------------------------------------
 */
 
@@ -3645,6 +3903,7 @@ setInterval(
         if (
             seekCache.size === 0
         ) {
+
             return;
         }
 
@@ -3674,7 +3933,7 @@ setInterval(
 
 /*
 |--------------------------------------------------------------------------
-| 启动
+| Start
 |--------------------------------------------------------------------------
 */
 
@@ -3689,7 +3948,7 @@ app.listen(
         );
 
         console.log(
-            '   Universal Range Streaming Server'
+            ' Universal File Streaming Server'
         );
 
         console.log(
@@ -3712,6 +3971,26 @@ app.listen(
                     1024
                 ).toFixed(2)
             } MB`
+        );
+
+        console.log(
+            `Remote Concurrency: ${
+                GLOBAL_REMOTE_CONCURRENCY
+            }`
+        );
+
+        console.log(
+            `Remote Timeout: ${
+                REMOTE_TIMEOUT_MS
+            } ms`
+        );
+
+        console.log(
+            `Seek Cache: ${
+                SEEK_CACHE_ENABLED
+                    ? 'ON'
+                    : 'OFF'
+            }`
         );
 
         console.log(
@@ -3745,35 +4024,11 @@ app.listen(
         );
 
         console.log(
-            `Max Cache / File: ${
-                (
-                    MAX_SEEK_CACHE_PER_FILE /
-                    1024 /
-                    1024
-                ).toFixed(0)
-            } MB`
-        );
-
-        console.log(
-            `Remote Concurrency: ${
-                GLOBAL_REMOTE_CONCURRENCY
-            }`
-        );
-
-        console.log(
-            `Seek Cache: ${
-                SEEK_CACHE_ENABLED
-                    ? 'ON'
-                    : 'OFF'
-            }`
-        );
-
-        console.log(
             'First Open: DIRECT STREAM'
         );
 
         console.log(
-            'Seek: MEMORY RANGE BUFFER'
+            'Range: DIRECT STREAM'
         );
 
         console.log(
@@ -3781,7 +4036,7 @@ app.listen(
         );
 
         console.log(
-            'Full File Cache: OFF'
+            'Full File Memory Cache: OFF'
         );
 
         console.log(
@@ -3789,7 +4044,7 @@ app.listen(
         );
 
         console.log(
-            'Original Extension: ON'
+            'All File Formats: ON'
         );
 
         console.log(
@@ -3798,4 +4053,4 @@ app.listen(
 
         console.log('');
     }
-);
+);// update Thu Sep 10 11:44:28 PM CST 2026
