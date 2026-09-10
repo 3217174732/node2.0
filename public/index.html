@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        Virtual Video
+    </title>
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+
+            padding: 40px 20px;
+
+            background: #f5f5f5;
+
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Arial,
+                sans-serif;
+        }
+
+        .container {
+            width: 100%;
+
+            max-width: 900px;
+
+            margin: 0 auto;
+
+            background: white;
+
+            padding: 30px;
+
+            border-radius: 12px;
+
+            box-shadow:
+                0 5px 25px
+                rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        .row {
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+
+            border: 0;
+
+            border-radius: 6px;
+
+            background: #1677ff;
+
+            color: white;
+
+            cursor: pointer;
+
+            font-size: 15px;
+        }
+
+        button:disabled {
+            background: #aaa;
+
+            cursor: not-allowed;
+        }
+
+        progress {
+            width: 100%;
+
+            height: 20px;
+
+            margin-top: 15px;
+        }
+
+        #status {
+            margin-top: 12px;
+
+            color: #555;
+
+            word-break: break-all;
+        }
+
+        video {
+            display: block;
+
+            width: 100%;
+
+            margin-top: 30px;
+
+            background: #000;
+
+            border-radius: 8px;
+        }
+
+        .info {
+            margin-top: 20px;
+
+            padding: 15px;
+
+            background: #f7f7f7;
+
+            border-radius: 6px;
+
+            font-size: 14px;
+
+            line-height: 1.8;
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+<div class="container">
+
+    <h1>
+        Virtual Video
+    </h1>
+
+
+    <div class="row">
+
+        <input
+            id="file"
+            type="file"
+            accept="video/*"
+        >
+
+    </div>
+
+
+    <div class="row">
+
+        <button id="upload">
+            开始上传
+        </button>
+
+    </div>
+
+
+    <div class="row">
+
+        <progress
+            id="progress"
+            value="0"
+            max="100">
+        </progress>
+
+    </div>
+
+
+    <div id="status">
+        等待选择视频
+    </div>
+
+
+    <div
+        id="info"
+        class="info">
+    </div>
+
+
+    <video
+        id="video"
+        controls
+        preload="metadata">
+    </video>
+
+</div>
+
+
+<script>
+
+/*
+|--------------------------------------------------------------------------
+| DOM
+|--------------------------------------------------------------------------
+*/
+
+const fileInput =
+    document.getElementById(
+        'file'
+    );
+
+
+const uploadButton =
+    document.getElementById(
+        'upload'
+    );
+
+
+const progress =
+    document.getElementById(
+        'progress'
+    );
+
+
+const status =
+    document.getElementById(
+        'status'
+    );
+
+
+const info =
+    document.getElementById(
+        'info'
+    );
+
+
+const video =
+    document.getElementById(
+        'video'
+    );
+
+
+/*
+|--------------------------------------------------------------------------
+| 创建视频
+|--------------------------------------------------------------------------
+*/
+
+async function createVideo(
+    file
+) {
+
+    const response =
+        await fetch(
+
+            '/api/videos',
+
+            {
+
+                method:
+                    'POST',
+
+                headers: {
+
+                    'Content-Type':
+                        'application/json'
+
+                },
+
+                body:
+                    JSON.stringify({
+
+                        filename:
+                            file.name,
+
+                        size:
+                            file.size,
+
+                        contentType:
+                            file.type ||
+                            'video/mp4'
+
+                    })
+
+            }
+
+        );
+
+
+    const result =
+        await response.json();
+
+
+    if (!response.ok) {
+
+        throw new Error(
+
+            result.error ||
+            '创建视频失败'
+
+        );
+
+    }
+
+
+    return result;
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| 上传单个 chunk
+|--------------------------------------------------------------------------
+*/
+
+async function uploadChunk({
+
+    videoId,
+
+    index,
+
+    blob
+
+}) {
+
+    const form =
+        new FormData();
+
+
+    /*
+     * 注意：
+     *
+     * 文件名使用 .jpg。
+     *
+     * blob 内容没有修改。
+     */
+    form.append(
+
+        'picFile',
+
+        blob,
+
+        `chunk_${
+            String(index)
+                .padStart(8, '0')
+        }.jpg`
+
+    );
+
+
+    const response =
+        await fetch(
+
+            `/api/videos/${videoId}` +
+            `/chunks/${index}`,
+
+            {
+
+                method:
+                    'POST',
+
+                body:
+                    form
+
+            }
+
+        );
+
+
+    const result =
+        await response.json();
+
+
+    if (!response.ok) {
+
+        throw new Error(
+
+            result.error ||
+            `chunk ${index} 上传失败`
+
+        );
+
+    }
+
+
+    return result;
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| 完成上传
+|--------------------------------------------------------------------------
+*/
+
+async function completeVideo(
+    videoId
+) {
+
+    const response =
+        await fetch(
+
+            `/api/videos/${videoId}/complete`,
+
+            {
+
+                method:
+                    'POST'
+
+            }
+
+        );
+
+
+    const result =
+        await response.json();
+
+
+    if (!response.ok) {
+
+        throw new Error(
+
+            result.error ||
+            '完成上传失败'
+
+        );
+
+    }
+
+
+    return result;
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| 开始上传
+|--------------------------------------------------------------------------
+*/
+
+uploadButton.onclick =
+    async function () {
+
+        const file =
+            fileInput.files[0];
+
+
+        /*
+         * 没有选择文件
+         */
+        if (!file) {
+
+            alert(
+                '请选择视频'
+            );
+
+            return;
+
+        }
+
+
+        /*
+         * 禁止重复点击
+         */
+        uploadButton.disabled =
+            true;
+
+
+        progress.value =
+            0;
+
+
+        try {
+
+            /*
+             * 创建视频
+             */
+            status.textContent =
+                '正在创建视频...';
+
+
+            const videoInfo =
+                await createVideo(
+                    file
+                );
+
+
+            const videoId =
+                videoInfo.id;
+
+
+            const chunkSize =
+                videoInfo.chunkSize;
+
+
+            const chunkCount =
+                videoInfo.chunkCount;
+
+
+            /*
+             * 显示信息
+             */
+            info.innerHTML = `
+
+                <div>
+                    文件：
+                    ${escapeHtml(file.name)}
+                </div>
+
+                <div>
+                    大小：
+                    ${formatBytes(file.size)}
+                </div>
+
+                <div>
+                    分片：
+                    ${chunkCount}
+                    个
+                </div>
+
+                <div>
+                    每片：
+                    ${formatBytes(chunkSize)}
+                </div>
+
+                <div>
+                    ID：
+                    ${videoId}
+                </div>
+
+            `;
+
+
+            /*
+             * 一个一个上传。
+             */
+            for (
+
+                let index = 0;
+
+                index < chunkCount;
+
+                index++
+
+            ) {
+
+                /*
+                 * 当前 chunk 开始位置
+                 */
+                const start =
+                    index *
+                    chunkSize;
+
+
+                /*
+                 * 当前 chunk 结束位置
+                 */
+                const end =
+                    Math.min(
+
+                        start +
+                        chunkSize,
+
+                        file.size
+
+                    );
+
+
+                /*
+                 * 浏览器直接切 Blob。
+                 *
+                 * 不需要真正复制视频。
+                 */
+                const blob =
+                    file.slice(
+
+                        start,
+
+                        end
+
+                    );
+
+
+                status.textContent =
+
+                    `正在上传第 ${
+                        index + 1
+                    } / ${
+                        chunkCount
+                    } 个分片...`;
+
+
+                /*
+                 * 上传
+                 */
+                await uploadChunk({
+
+                    videoId,
+
+                    index,
+
+                    blob
+
+                });
+
+
+                /*
+                 * 更新进度
+                 */
+                progress.value =
+                    Math.round(
+
+                        (
+                            (
+                                index + 1
+                            ) /
+                            chunkCount
+                        ) *
+                        100
+
+                    );
+
+            }
+
+
+            /*
+             * 通知服务器全部完成
+             */
+            status.textContent =
+                '分片全部上传完成，正在生成虚拟文件...';
+
+
+            const result =
+                await completeVideo(
+                    videoId
+                );
+
+
+            /*
+             * 这个 URL 就是最终的视频 URL。
+             */
+            const videoUrl =
+                result.videoUrl;
+
+
+            status.textContent =
+                '上传完成，可以播放。';
+
+
+            /*
+             * 设置视频地址。
+             */
+            video.src =
+                videoUrl;
+
+
+            /*
+             * 重新加载。
+             */
+            video.load();
+
+
+            /*
+             * 更新信息
+             */
+            info.innerHTML += `
+
+                <div style="
+                    margin-top: 10px;
+                    color: #1677ff;
+                ">
+                    虚拟视频地址：
+                    ${escapeHtml(videoUrl)}
+                </div>
+
+            `;
+
+        } catch (error) {
+
+            console.error(
+                error
+            );
+
+
+            status.textContent =
+                `上传失败：${
+                    error.message
+                }`;
+
+        } finally {
+
+            uploadButton.disabled =
+                false;
+
+        }
+
+    };
+
+
+/*
+|--------------------------------------------------------------------------
+| 格式化文件大小
+|--------------------------------------------------------------------------
+*/
+
+function formatBytes(
+    bytes
+) {
+
+    if (
+        bytes < 1024
+    ) {
+
+        return `${bytes} B`;
+
+    }
+
+
+    if (
+        bytes < 1024 * 1024
+    ) {
+
+        return `${
+            (
+                bytes / 1024
+            ).toFixed(2)
+        } KB`;
+
+    }
+
+
+    if (
+        bytes < 1024 * 1024 * 1024
+    ) {
+
+        return `${
+            (
+                bytes /
+                1024 /
+                1024
+            ).toFixed(2)
+        } MB`;
+
+    }
+
+
+    return `${
+        (
+            bytes /
+            1024 /
+            1024 /
+            1024
+        ).toFixed(2)
+    } GB`;
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| 防止文件名注入 HTML
+|--------------------------------------------------------------------------
+*/
+
+function escapeHtml(
+    value
+) {
+
+    return String(value)
+
+        .replace(
+            /&/g,
+            '&amp;'
+        )
+
+        .replace(
+            /</g,
+            '&lt;'
+        )
+
+        .replace(
+            />/g,
+            '&gt;'
+        )
+
+        .replace(
+            /"/g,
+            '&quot;'
+        )
+
+        .replace(
+            /'/g,
+            '&#039;'
+        );
+
+}
+
+</script>
+
+</body>
+
+</html>

@@ -1,0 +1,25 @@
+{
+  "id": "4663018a-242d-40dc-8352-e74be8a2585d",
+  "filename": "20260712-030609.mp4",
+  "size": 7369593,
+  "contentType": "video/mp4",
+  "chunkSize": 5242880,
+  "chunkCount": 2,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD2Y0bNWlVvvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T03:10:33.102Z"
+    },
+    "1": {
+      "index": 1,
+      "size": 2126713,
+      "url": "https://static.dingtalk.com/media/lADPM20Mq7c8K3vNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T03:10:40.939Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-10T03:10:16.137Z",
+  "completedAt": "2026-09-10T03:10:41.324Z"
+}
