@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 */
 
 const PORT = Number(
-    process.env.PORT || 8080
+    process.env.PORT || 8020
 );
 
 /*
