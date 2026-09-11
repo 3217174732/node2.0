@@ -29,84 +29,21 @@ const CHUNK_SIZE = Math.max(
 );
 
 /*
- * 钉钉远程请求最大并发。
- */
-const GLOBAL_REMOTE_CONCURRENCY = Math.max(
-    1,
-    Number(
-        process.env.GLOBAL_REMOTE_CONCURRENCY ||
-        32
-    )
-);
-
-/*
- * 钉钉请求超时。
+ * 单个 DingTalk Range 请求超时。
  *
  * 注意：
- * 这里不是整个视频下载超时。
- * 而是单个 Range HTTP 请求的超时。
+ *
+ * 这是单个 HTTP 请求的超时时间，
+ * 不是整个视频播放的超时时间。
+ *
+ * 只要请求本身没有超时，
+ * 数据可以持续流式返回。
  */
 const REMOTE_TIMEOUT_MS = Math.max(
     3000,
     Number(
         process.env.REMOTE_TIMEOUT_MS ||
         30000
-    )
-);
-
-/*
- * seek 缓存。
- *
- * 只有浏览器跳转 Range 时使用。
- */
-const SEEK_CACHE_ENABLED =
-    String(
-        process.env.SEEK_CACHE_ENABLED || 'true'
-    ).toLowerCase() === 'true';
-
-/*
- * seek 时向附近扩展多少。
- */
-const SEEK_PREFETCH_SIZE = Math.max(
-    256 * 1024,
-    Number(
-        process.env.SEEK_PREFETCH_SIZE ||
-        4 * 1024 * 1024
-    )
-);
-
-/*
- * 单个 seek buffer 最大大小。
- */
-const SEEK_BUFFER_SIZE = Math.max(
-    256 * 1024,
-    Number(
-        process.env.SEEK_BUFFER_SIZE ||
-        4 * 1024 * 1024
-    )
-);
-
-/*
- * 全局 seek cache 最大内存。
- *
- * 默认 64MB。
- */
-const MAX_SEEK_CACHE_BYTES = Math.max(
-    0,
-    Number(
-        process.env.MAX_SEEK_CACHE_BYTES ||
-        64 * 1024 * 1024
-    )
-);
-
-/*
- * 单文件 seek cache 最大内存。
- */
-const MAX_SEEK_CACHE_PER_FILE = Math.max(
-    0,
-    Number(
-        process.env.MAX_SEEK_CACHE_PER_FILE ||
-        8 * 1024 * 1024
     )
 );
 
@@ -809,16 +746,6 @@ function getDingTalkHeaders() {
 |--------------------------------------------------------------------------
 | Upload to DingTalk
 |--------------------------------------------------------------------------
-|
-| 重要：
-|
-| 以前这里固定：
-|
-|     type: image/jpeg
-|
-| 现在不再伪装成 JPEG。
-|
-|--------------------------------------------------------------------------
 */
 
 async function uploadChunkToDingTalk({
@@ -940,57 +867,6 @@ async function uploadChunkToDingTalk({
 
 /*
 |--------------------------------------------------------------------------
-| Remote concurrency
-|--------------------------------------------------------------------------
-*/
-
-let globalRemoteActive = 0;
-
-const globalRemoteQueue = [];
-
-async function acquireRemoteSlot() {
-
-    if (
-        globalRemoteActive <
-        GLOBAL_REMOTE_CONCURRENCY
-    ) {
-
-        globalRemoteActive++;
-
-        return;
-    }
-
-    await new Promise(
-        resolve => {
-
-            globalRemoteQueue.push(
-                resolve
-            );
-        }
-    );
-
-    globalRemoteActive++;
-}
-
-function releaseRemoteSlot() {
-
-    globalRemoteActive =
-        Math.max(
-            0,
-            globalRemoteActive - 1
-        );
-
-    const next =
-        globalRemoteQueue.shift();
-
-    if (next) {
-
-        next();
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
 | Parse HTTP Range
 |--------------------------------------------------------------------------
 */
@@ -1005,6 +881,15 @@ function parseRange(
         return null;
     }
 
+    /*
+     * 当前代理只支持单 Range。
+     *
+     * 例如：
+     *
+     * bytes=0-999
+     * bytes=1000-
+     * bytes=-1000
+     */
     const match =
         /^bytes=(\d*)-(\d*)$/
             .exec(
@@ -1029,6 +914,8 @@ function parseRange(
 
     /*
      * bytes=-500
+     *
+     * 最后 500 bytes。
      */
     if (
         startText === ''
@@ -1095,15 +982,23 @@ function parseRange(
                 Number(
                     endText
                 );
+
+            if (
+                !Number.isSafeInteger(
+                    end
+                )
+            ) {
+
+                throw new Error(
+                    'Invalid Range'
+                );
+            }
         }
     }
 
     if (
-        !Number.isSafeInteger(
-            end
-        ) ||
-        end < start ||
-        start >= totalSize
+        start >= totalSize ||
+        end < start
     ) {
 
         throw new Error(
@@ -1132,14 +1027,31 @@ function parseRange(
 
 /*
 |--------------------------------------------------------------------------
-| Remote Range Request
+| Direct DingTalk Range
 |--------------------------------------------------------------------------
 |
-| 最重要：
+| 这里是整个项目最重要的部分。
 |
-| 每次只从钉钉拿真正需要的 Range。
+| 浏览器：
 |
-| 不读取整个文件。
+|     Range: bytes=100-999
+|
+| Node：
+|
+|     Range: bytes=100-999
+|
+| DingTalk：
+|
+|     206 Partial Content
+|
+| Node：
+|
+|     立即把 body 流给浏览器。
+|
+| 不缓存。
+| 不共享。
+| 不合并。
+| 不排队。
 |
 |--------------------------------------------------------------------------
 */
@@ -1151,28 +1063,26 @@ async function fetchDingTalkRange({
     signal
 }) {
 
-    await acquireRemoteSlot();
-
     const controller =
         new AbortController();
 
-    let released = false;
+    let timer = null;
 
-    function release() {
+    let aborted =
+        false;
 
-        if (released) {
-            return;
-        }
+    const onAbort =
+        () => {
 
-        released = true;
+            aborted =
+                true;
 
-        releaseRemoteSlot();
-    }
+            try {
 
-    function onAbort() {
+                controller.abort();
 
-        controller.abort();
-    }
+            } catch {}
+        };
 
     if (signal) {
 
@@ -1195,11 +1105,15 @@ async function fetchDingTalkRange({
         }
     }
 
-    const timer =
+    timer =
         setTimeout(
             () => {
 
-                controller.abort();
+                try {
+
+                    controller.abort();
+
+                } catch {}
 
             },
             REMOTE_TIMEOUT_MS
@@ -1207,6 +1121,9 @@ async function fetchDingTalkRange({
 
     try {
 
+        /*
+         * 每个用户请求独立创建一个 fetch。
+         */
         const headers =
             getDingTalkHeaders();
 
@@ -1231,17 +1148,63 @@ async function fetchDingTalkRange({
                 }
             );
 
+        if (
+            aborted
+        ) {
+
+            throw new Error(
+                'Client disconnected'
+            );
+        }
+
         /*
-         * 不允许 200 fallback。
+         * Range 请求必须得到 206。
+         *
+         * 不能把 200 当成 206。
          */
         if (
             response.status !== 206
         ) {
 
+            /*
+             * 尽量读取少量错误内容，
+             * 方便日志排查。
+             */
+            let detail = '';
+
+            try {
+
+                detail =
+                    await response.text();
+
+                detail =
+                    detail.slice(
+                        0,
+                        500
+                    );
+
+            } catch {}
+
             throw new Error(
-                `DingTalk Range 请求必须返回 206，实际 HTTP ${
+                `DingTalk Range 请求失败：HTTP ${
                     response.status
+                }，期望 206${
+                    detail
+                        ? ` | ${detail}`
+                        : ''
                 }`
+            );
+        }
+
+        /*
+         * 必须存在 body。
+         */
+        if (
+            !response.body
+        ) {
+
+            throw new Error(
+                'DingTalk response body 不存在'
             );
         }
 
@@ -1249,20 +1212,17 @@ async function fetchDingTalkRange({
 
             response,
 
-            release
+            controller
         };
-
-    } catch (error) {
-
-        release();
-
-        throw error;
 
     } finally {
 
-        clearTimeout(
-            timer
-        );
+        if (timer) {
+
+            clearTimeout(
+                timer
+            );
+        }
 
         if (signal) {
 
@@ -1276,20 +1236,22 @@ async function fetchDingTalkRange({
 
 /*
 |--------------------------------------------------------------------------
-| Stream DingTalk response directly
+| Direct Stream
 |--------------------------------------------------------------------------
 |
-| 这个函数是首次播放的核心。
+| 将 DingTalk response body 直接流给当前用户。
 |
-| DingTalk
-|     ↓
-| response.body
-|     ↓
-| Node
-|     ↓
-| browser
+| 注意：
 |
-| 中间不生成完整 Buffer。
+| 不使用：
+|
+|     arrayBuffer()
+|
+| 不使用：
+|
+|     Buffer.concat()
+|
+| 不保存整个 Range。
 |
 |--------------------------------------------------------------------------
 */
@@ -1317,119 +1279,131 @@ async function streamRemoteRange({
             signal
         });
 
+    const reader =
+        remote.response
+            .body
+            .getReader();
+
+    let total =
+        0;
+
     try {
 
-        if (
-            !remote.response.body
-        ) {
+        while (true) {
 
-            throw new Error(
-                'DingTalk response body 不存在'
-            );
-        }
-
-        const reader =
-            remote.response
-                .body
-                .getReader();
-
-        let total =
-            0;
-
-        try {
-
-            while (
-                total <
-                expectedLength
+            /*
+             * 当前浏览器已经关闭。
+             */
+            if (
+                signal.aborted ||
+                response.destroyed
             ) {
 
-                if (
-                    signal.aborted ||
-                    response.destroyed
-                ) {
+                try {
 
-                    try {
+                    await reader.cancel();
 
-                        await reader.cancel();
+                } catch {}
 
-                    } catch {}
+                try {
 
-                    return;
-                }
+                    remote.controller.abort();
 
-                const {
-                    done,
-                    value
-                } =
-                    await reader.read();
+                } catch {}
 
-                if (done) {
-                    break;
-                }
-
-                if (
-                    !value ||
-                    value.byteLength <= 0
-                ) {
-
-                    continue;
-                }
-
-                const remaining =
-                    expectedLength -
-                    total;
-
-                const writeLength =
-                    Math.min(
-                        remaining,
-                        value.byteLength
-                    );
-
-                const buffer =
-                    Buffer.from(
-                        value.buffer,
-                        value.byteOffset,
-                        writeLength
-                    );
-
-                total +=
-                    writeLength;
-
-                if (
-                    !response.write(
-                        buffer
-                    )
-                ) {
-
-                    await new Promise(
-                        resolve => {
-
-                            response.once(
-                                'drain',
-                                resolve
-                            );
-                        }
-                    );
-                }
+                return;
             }
 
-        } finally {
+            const {
+                done,
+                value
+            } =
+                await reader.read();
 
-            try {
+            if (done) {
 
-                reader.releaseLock();
+                break;
+            }
 
-            } catch {}
+            if (
+                !value ||
+                value.byteLength <= 0
+            ) {
+
+                continue;
+            }
+
+            /*
+             * 防止上游返回超过 Range
+             * 的数据。
+             */
+            const remaining =
+                expectedLength -
+                total;
+
+            if (
+                remaining <= 0
+            ) {
+
+                break;
+            }
+
+            const writeLength =
+                Math.min(
+                    remaining,
+                    value.byteLength
+                );
+
+            const buffer =
+                Buffer.from(
+                    value.buffer,
+                    value.byteOffset,
+                    writeLength
+                );
+
+            total +=
+                writeLength;
+
+            /*
+             * 立即发给当前用户。
+             */
+            if (
+                !response.write(
+                    buffer
+                )
+            ) {
+
+                /*
+                 * 浏览器 / Node 下游速度较慢，
+                 * 暂停读取上游。
+                 *
+                 * 这就是正常的 backpressure。
+                 */
+                await new Promise(
+                    resolve => {
+
+                        response.once(
+                            'drain',
+                            resolve
+                        );
+                    }
+                );
+            }
         }
 
+        /*
+         * 上游少发数据，
+         * 不能认为成功。
+         */
         if (
             total !==
                 expectedLength &&
-            !signal.aborted
+            !signal.aborted &&
+            !response.destroyed
         ) {
 
             throw new Error(
-                `DingTalk Range 长度异常：期望 ${
+                `DingTalk Range 数据长度异常：期望 ${
                     expectedLength
                 }，实际 ${
                     total
@@ -1439,18 +1413,59 @@ async function streamRemoteRange({
 
     } finally {
 
-        remote.release();
+        try {
+
+            reader.releaseLock();
+
+        } catch {}
+
+        /*
+         * 如果客户端已经断开，
+         * 确保上游 fetch 一起取消。
+         */
+        if (
+            signal.aborted ||
+            response.destroyed
+        ) {
+
+            try {
+
+                remote.controller.abort();
+
+            } catch {}
+        }
     }
 }
 
 /*
 |--------------------------------------------------------------------------
-| Direct stream across chunks
+| Direct File Stream
 |--------------------------------------------------------------------------
 |
-| 首次打开 / 正常播放：
+| 一个用户的请求可能跨越多个 DingTalk chunk。
 |
-| 永远优先使用这里。
+| 例如：
+|
+| Browser：
+|
+|     bytes=7000000-10000000
+|
+| 而我们的文件：
+|
+|     chunk 0 = 0-8388607
+|     chunk 1 = 8388608-16777215
+|
+| 那么：
+|
+|     DingTalk chunk 0
+|         7000000-8388607
+|
+|     然后
+|
+|     DingTalk chunk 1
+|         0-1611392
+|
+| 两个请求依次直接发送。
 |
 |--------------------------------------------------------------------------
 */
@@ -1512,909 +1527,10 @@ async function streamRangeDirect({
         const chunkEnd =
             Math.min(
                 manifest.size - 1,
+
                 chunkStart +
-                    manifest.chunkSize -
-                    1
-            );
-
-        const actualStart =
-            Math.max(
-                start,
-                chunkStart
-            );
-
-        const actualEnd =
-            Math.min(
-                end,
-                chunkEnd
-            );
-
-        const remoteStart =
-            actualStart -
-            chunkStart;
-
-        const remoteEnd =
-            actualEnd -
-            chunkStart;
-
-        await streamRemoteRange({
-
-            url:
-                chunk.url,
-
-            remoteStart,
-
-            remoteEnd,
-
-            response,
-
-            expectedLength:
-                actualEnd -
-                actualStart +
-                1,
-
-            signal
-        });
-    }
-
-    if (
-        !signal.aborted &&
-        !response.destroyed &&
-        !response.writableEnded
-    ) {
-
-        response.end();
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Seek Cache
-|--------------------------------------------------------------------------
-*/
-
-const seekCache =
-    new Map();
-
-let seekCacheBytes =
-    0;
-
-/*
-|--------------------------------------------------------------------------
-| Cache key
-|--------------------------------------------------------------------------
-*/
-
-function makeSeekCacheKey(
-    fileId,
-    start,
-    end
-) {
-
-    return (
-        `${fileId}:${start}:${end}`
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Remove cache
-|--------------------------------------------------------------------------
-*/
-
-function removeSeekCache(
-    key
-) {
-
-    const entry =
-        seekCache.get(
-            key
-        );
-
-    if (!entry) {
-        return;
-    }
-
-    seekCache.delete(
-        key
-    );
-
-    seekCacheBytes =
-        Math.max(
-            0,
-            seekCacheBytes -
-                entry.buffer.length
-        );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Global cache eviction
-|--------------------------------------------------------------------------
-*/
-
-function evictSeekCache(
-    requiredBytes = 0
-) {
-
-    while (
-        seekCacheBytes +
-            requiredBytes >
-        MAX_SEEK_CACHE_BYTES
-    ) {
-
-        const iterator =
-            seekCache
-                .entries()
-                .next();
-
-        if (
-            iterator.done
-        ) {
-
-            break;
-        }
-
-        const [
-            key
-        ] =
-            iterator.value;
-
-        removeSeekCache(
-            key
-        );
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| File cache bytes
-|--------------------------------------------------------------------------
-*/
-
-function getFileSeekCacheBytes(
-    fileId
-) {
-
-    let total =
-        0;
-
-    for (
-        const entry
-        of seekCache.values()
-    ) {
-
-        if (
-            entry.fileId ===
-            fileId
-        ) {
-
-            total +=
-                entry.buffer.length;
-        }
-    }
-
-    return total;
-}
-
-/*
-|--------------------------------------------------------------------------
-| File cache eviction
-|--------------------------------------------------------------------------
-*/
-
-function evictFileSeekCache(
-    fileId,
-    requiredBytes = 0
-) {
-
-    while (
-        getFileSeekCacheBytes(
-            fileId
-        ) +
-        requiredBytes >
-        MAX_SEEK_CACHE_PER_FILE
-    ) {
-
-        let oldest =
-            null;
-
-        for (
-            const entry
-            of seekCache.values()
-        ) {
-
-            if (
-                entry.fileId !==
-                fileId
-            ) {
-
-                continue;
-            }
-
-            if (
-                !oldest ||
-                entry.lastUsed <
-                    oldest.lastUsed
-            ) {
-
-                oldest =
-                    entry;
-            }
-        }
-
-        if (!oldest) {
-            break;
-        }
-
-        removeSeekCache(
-            oldest.key
-        );
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Find covering cache
-|--------------------------------------------------------------------------
-*/
-
-function findCoveringSeekCache(
-    fileId,
-    start,
-    end
-) {
-
-    for (
-        const entry
-        of seekCache.values()
-    ) {
-
-        if (
-            entry.fileId !==
-            fileId
-        ) {
-
-            continue;
-        }
-
-        if (
-            entry.start <= start &&
-            entry.end >= end
-        ) {
-
-            entry.lastUsed =
-                Date.now();
-
-            /*
-             * LRU move to end.
-             */
-            seekCache.delete(
-                entry.key
-            );
-
-            seekCache.set(
-                entry.key,
-                entry
-            );
-
-            return entry;
-        }
-    }
-
-    return null;
-}
-
-/*
-|--------------------------------------------------------------------------
-| Put cache
-|--------------------------------------------------------------------------
-*/
-
-function putSeekCache({
-    fileId,
-    start,
-    end,
-    buffer
-}) {
-
-    if (
-        !SEEK_CACHE_ENABLED
-    ) {
-
-        return;
-    }
-
-    if (
-        MAX_SEEK_CACHE_BYTES <= 0 ||
-        MAX_SEEK_CACHE_PER_FILE <= 0
-    ) {
-
-        return;
-    }
-
-    if (
-        !buffer ||
-        buffer.length <= 0
-    ) {
-
-        return;
-    }
-
-    if (
-        buffer.length >
-        SEEK_BUFFER_SIZE
-    ) {
-
-        return;
-    }
-
-    /*
-     * 先删除同文件旧缓存。
-     */
-    const key =
-        makeSeekCacheKey(
-            fileId,
-            start,
-            end
-        );
-
-    if (
-        seekCache.has(key)
-    ) {
-
-        removeSeekCache(
-            key
-        );
-    }
-
-    /*
-     * 当前文件限制。
-     */
-    evictFileSeekCache(
-        fileId,
-        buffer.length
-    );
-
-    /*
-     * 全局限制。
-     */
-    evictSeekCache(
-        buffer.length
-    );
-
-    /*
-     * 如果即使清理后也放不下，
-     * 就不缓存。
-     */
-    if (
-        seekCacheBytes +
-            buffer.length >
-        MAX_SEEK_CACHE_BYTES
-    ) {
-
-        return;
-    }
-
-    if (
-        getFileSeekCacheBytes(
-            fileId
-        ) +
-        buffer.length >
-        MAX_SEEK_CACHE_PER_FILE
-    ) {
-
-        return;
-    }
-
-    const now =
-        Date.now();
-
-    const entry = {
-
-        key,
-
-        fileId,
-
-        start,
-
-        end,
-
-        buffer,
-
-        createdAt:
-            now,
-
-        lastUsed:
-            now
-    };
-
-    seekCache.set(
-        key,
-        entry
-    );
-
-    seekCacheBytes +=
-        buffer.length;
-}
-
-/*
-|--------------------------------------------------------------------------
-| Slice cache
-|--------------------------------------------------------------------------
-*/
-
-function sliceSeekCache(
-    entry,
-    start,
-    end
-) {
-
-    entry.lastUsed =
-        Date.now();
-
-    seekCache.delete(
-        entry.key
-    );
-
-    seekCache.set(
-        entry.key,
-        entry
-    );
-
-    const offset =
-        start -
-        entry.start;
-
-    const length =
-        end -
-        start +
-        1;
-
-    return entry.buffer.subarray(
-        offset,
-        offset + length
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Fetch seek buffer
-|--------------------------------------------------------------------------
-|
-| 注意：
-|
-| 这个函数只用于 seek。
-|
-| 首次打开绝对不会调用。
-|
-|--------------------------------------------------------------------------
-*/
-
-async function getSeekBuffer({
-    manifest,
-    requestedStart,
-    requestedEnd,
-    signal
-}) {
-
-    /*
-     * 先找缓存。
-     */
-    const cached =
-        findCoveringSeekCache(
-            manifest.id,
-            requestedStart,
-            requestedEnd
-        );
-
-    if (cached) {
-
-        return {
-
-            buffer:
-                sliceSeekCache(
-                    cached,
-                    requestedStart,
-                    requestedEnd
-                ),
-
-            fromCache:
-                true
-        };
-    }
-
-    /*
-     * 计算预取范围。
-     *
-     * 从用户 seek 位置附近开始，
-     * 而不是从文件头开始。
-     */
-    let fetchStart =
-        Math.floor(
-            requestedStart /
-            SEEK_PREFETCH_SIZE
-        ) *
-        SEEK_PREFETCH_SIZE;
-
-    fetchStart =
-        Math.max(
-            0,
-            Math.min(
-                fetchStart,
-                requestedStart
-            )
-        );
-
-    let fetchEnd =
-        Math.max(
-            requestedEnd,
-            fetchStart +
-                SEEK_PREFETCH_SIZE -
-                1
-        );
-
-    fetchEnd =
-        Math.min(
-            manifest.size - 1,
-            fetchEnd
-        );
-
-    /*
-     * 控制最大 buffer。
-     */
-    if (
-        fetchEnd -
-            fetchStart +
-            1 >
-        SEEK_BUFFER_SIZE
-    ) {
-
-        fetchEnd =
-            Math.min(
-                manifest.size - 1,
-                fetchStart +
-                    SEEK_BUFFER_SIZE -
-                    1
-            );
-    }
-
-    /*
-     * 一个 seek buffer 尽量限制在一个 chunk 内。
-     */
-    const chunkIndex =
-        Math.floor(
-            fetchStart /
-            manifest.chunkSize
-        );
-
-    const chunk =
-        manifest.chunks[
-            chunkIndex
-        ];
-
-    if (!chunk) {
-
-        throw new Error(
-            `Chunk ${chunkIndex} 不存在`
-        );
-    }
-
-    const chunkStart =
-        chunkIndex *
-        manifest.chunkSize;
-
-    const chunkEnd =
-        Math.min(
-            manifest.size - 1,
-            chunkStart +
                 manifest.chunkSize -
                 1
-        );
-
-    fetchEnd =
-        Math.min(
-            fetchEnd,
-            chunkEnd
-        );
-
-    const remoteStart =
-        fetchStart -
-        chunkStart;
-
-    const remoteEnd =
-        fetchEnd -
-        chunkStart;
-
-    const buffer =
-        await fetchRemoteBuffer({
-
-            url:
-                chunk.url,
-
-            start:
-                remoteStart,
-
-            end:
-                remoteEnd,
-
-            signal
-        });
-
-    /*
-     * 放进 seek cache。
-     */
-    putSeekCache({
-
-        fileId:
-            manifest.id,
-
-        start:
-            fetchStart,
-
-        end:
-            fetchStart +
-                buffer.length -
-                1,
-
-        buffer
-    });
-
-    /*
-     * 再查一次。
-     */
-    const newCached =
-        findCoveringSeekCache(
-            manifest.id,
-            requestedStart,
-            requestedEnd
-        );
-
-    if (newCached) {
-
-        return {
-
-            buffer:
-                sliceSeekCache(
-                    newCached,
-                    requestedStart,
-                    requestedEnd
-                ),
-
-            fromCache:
-                false
-        };
-    }
-
-    /*
-     * 如果 cache 因内存限制没放进去，
-     * 直接使用本次 buffer。
-     */
-    const offset =
-        requestedStart -
-        fetchStart;
-
-    return {
-
-        buffer:
-            buffer.subarray(
-                offset,
-                offset +
-                    (
-                        requestedEnd -
-                        requestedStart +
-                        1
-                    )
-            ),
-
-        fromCache:
-            false
-    };
-}
-
-/*
-|--------------------------------------------------------------------------
-| Fetch remote buffer
-|--------------------------------------------------------------------------
-|
-| 仅 seek 使用。
-|
-|--------------------------------------------------------------------------
-*/
-
-async function fetchRemoteBuffer({
-    url,
-    start,
-    end,
-    signal
-}) {
-
-    const remote =
-        await fetchDingTalkRange({
-
-            url,
-
-            start,
-
-            end,
-
-            signal
-        });
-
-    try {
-
-        if (
-            !remote.response.body
-        ) {
-
-            throw new Error(
-                'DingTalk response body 不存在'
-            );
-        }
-
-        const reader =
-            remote.response
-                .body
-                .getReader();
-
-        const parts = [];
-
-        let total =
-            0;
-
-        try {
-
-            while (true) {
-
-                if (
-                    signal?.aborted
-                ) {
-
-                    try {
-
-                        await reader.cancel();
-
-                    } catch {}
-
-                    throw new Error(
-                        'Request aborted'
-                    );
-                }
-
-                const {
-                    done,
-                    value
-                } =
-                    await reader.read();
-
-                if (done) {
-                    break;
-                }
-
-                if (
-                    value &&
-                    value.byteLength > 0
-                ) {
-
-                    parts.push(
-                        Buffer.from(
-                            value
-                        )
-                    );
-
-                    total +=
-                        value.byteLength;
-                }
-            }
-
-        } finally {
-
-            try {
-
-                reader.releaseLock();
-
-            } catch {}
-        }
-
-        const buffer =
-            Buffer.concat(
-                parts,
-                total
-            );
-
-        const expectedLength =
-            end -
-            start +
-            1;
-
-        if (
-            buffer.length !==
-            expectedLength
-        ) {
-
-            throw new Error(
-                `DingTalk Range 长度异常：期望 ${
-                    expectedLength
-                }，实际 ${
-                    buffer.length
-                }`
-            );
-        }
-
-        return buffer;
-
-    } finally {
-
-        remote.release();
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Seek streaming
-|--------------------------------------------------------------------------
-*/
-
-async function streamSeekRange({
-    manifest,
-    start,
-    end,
-    response,
-    signal
-}) {
-
-    const firstChunk =
-        Math.floor(
-            start /
-            manifest.chunkSize
-        );
-
-    const lastChunk =
-        Math.floor(
-            end /
-            manifest.chunkSize
-        );
-
-    for (
-        let index =
-            firstChunk;
-
-        index <=
-            lastChunk;
-
-        index++
-    ) {
-
-        if (
-            signal.aborted ||
-            response.destroyed
-        ) {
-
-            return;
-        }
-
-        const chunk =
-            manifest.chunks[
-                index
-            ];
-
-        if (!chunk) {
-
-            throw new Error(
-                `Chunk ${index} 不存在`
-            );
-        }
-
-        const chunkStart =
-            index *
-            manifest.chunkSize;
-
-        const chunkEnd =
-            Math.min(
-                manifest.size - 1,
-                chunkStart +
-                    manifest.chunkSize -
-                    1
             );
 
         const actualStart =
@@ -2430,48 +1546,58 @@ async function streamSeekRange({
             );
 
         /*
-         * 注意：
-         *
-         * seek cache 只缓存实际 seek 附近的数据。
+         * 转换成 DingTalk 这个 chunk
+         * 内部的 Range。
          */
-        const result =
-            await getSeekBuffer({
+        const remoteStart =
+            actualStart -
+            chunkStart;
 
-                manifest,
+        const remoteEnd =
+            actualEnd -
+            chunkStart;
 
-                requestedStart:
-                    actualStart,
+        const expectedLength =
+            actualEnd -
+            actualStart +
+            1;
 
-                requestedEnd:
-                    actualEnd,
+        console.log(
+            `[REMOTE] ${
+                manifest.filename
+            } | client=${
+                start
+            }-${
+                end
+            } | chunk=${
+                index
+            } | remote=${
+                remoteStart
+            }-${
+                remoteEnd
+            }`
+        );
 
-                signal
-            });
+        /*
+         * 当前 chunk：
+         *
+         * DingTalk → Node → 当前用户
+         */
+        await streamRemoteRange({
 
-        if (
-            signal.aborted ||
-            response.destroyed
-        ) {
+            url:
+                chunk.url,
 
-            return;
-        }
+            remoteStart,
 
-        if (
-            !response.write(
-                result.buffer
-            )
-        ) {
+            remoteEnd,
 
-            await new Promise(
-                resolve => {
+            response,
 
-                    response.once(
-                        'drain',
-                        resolve
-                    );
-                }
-            );
-        }
+            expectedLength,
+
+            signal
+        });
     }
 
     if (
@@ -2503,7 +1629,7 @@ function buildFileUrl(
 
 /*
 |--------------------------------------------------------------------------
-| Create
+| Create Video
 |--------------------------------------------------------------------------
 */
 
@@ -2630,7 +1756,8 @@ app.post(
                         false,
 
                     error:
-                        error.message
+                        error.message ||
+                        'Internal Server Error'
                 });
         }
     }
@@ -2638,7 +1765,7 @@ app.post(
 
 /*
 |--------------------------------------------------------------------------
-| Query
+| Query Video
 |--------------------------------------------------------------------------
 */
 
@@ -2714,7 +1841,7 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| Upload chunk
+| Upload Chunk
 |--------------------------------------------------------------------------
 */
 
@@ -2885,9 +2012,6 @@ app.post(
 
             /*
              * DingTalk 文件名。
-             *
-             * 保持内部上传接口要求的方式，
-             * 但 MIME 不再强制 JPEG。
              */
             const dingFilename =
                 `chunk_${
@@ -2988,7 +2112,8 @@ app.post(
                         false,
 
                     error:
-                        error.message
+                        error.message ||
+                        'Internal Server Error'
                 });
         }
     }
@@ -3116,9 +2241,6 @@ app.post(
                 videoUrl:
                     fileUrl,
 
-                /*
-                 * 旧接口兼容。
-                 */
                 legacyUrl:
                     `/video/${manifest.id}`
             });
@@ -3138,7 +2260,8 @@ app.post(
                         false,
 
                     error:
-                        error.message
+                        error.message ||
+                        'Internal Server Error'
                 });
         }
     }
@@ -3219,7 +2342,7 @@ async function getManifestFromFileRequest(
 
 /*
 |--------------------------------------------------------------------------
-| Common response headers
+| Response Headers
 |--------------------------------------------------------------------------
 */
 
@@ -3253,23 +2376,26 @@ function getFileHeaders(
             'nosniff',
 
         /*
-         * 不禁止浏览器本身的媒体缓冲。
+         * 明确不让 Node / 浏览器把这个代理
+         * 当成我们的缓存。
+         *
+         * 注意：
+         * 这不会禁止 video 标签自身的播放缓冲。
          */
         'Cache-Control':
-            'public, max-age=3600'
+            'no-store, no-cache, must-revalidate, proxy-revalidate',
+
+        'Pragma':
+            'no-cache',
+
+        'Expires':
+            '0'
     };
 }
 
 /*
 |--------------------------------------------------------------------------
-| Main file handler
-|--------------------------------------------------------------------------
-|
-| /file/xxx.mp4
-| /video/uuid
-|
-| 都走这里。
-|
+| Main File Handler
 |--------------------------------------------------------------------------
 */
 
@@ -3279,9 +2405,7 @@ async function handleFileRequest(
     manifest
 ) {
 
-    if (
-        !manifest
-    ) {
+    if (!manifest) {
 
         return res
             .status(404)
@@ -3330,7 +2454,8 @@ async function handleFileRequest(
     }
 
     /*
-     * Client abort controller.
+     * 每一个浏览器请求拥有自己的
+     * AbortController。
      */
     const controller =
         new AbortController();
@@ -3342,14 +2467,25 @@ async function handleFileRequest(
         () => {
 
             /*
-             * response close 可能在正常 end 后触发。
+             * 正常 response.end() 后的 close
+             * 不应该再次 abort。
              */
             if (
                 !finished &&
                 !res.writableEnded
             ) {
 
-                controller.abort();
+                console.log(
+                    `[CLIENT CLOSE] ${
+                        manifest.filename
+                    }`
+                );
+
+                try {
+
+                    controller.abort();
+
+                } catch {}
             }
         };
 
@@ -3370,7 +2506,17 @@ async function handleFileRequest(
                     manifest.size
                 );
 
-        } catch {
+        } catch (error) {
+
+            console.warn(
+                `[RANGE 416] ${
+                    manifest.filename
+                } | ${
+                    req.headers.range || ''
+                } | ${
+                    error.message
+                }`
+            );
 
             return res
                 .status(416)
@@ -3388,11 +2534,11 @@ async function handleFileRequest(
          *
          * 完整文件直接流式。
          *
-         * 这不是把整个文件一次性下载。
+         * 仍然按照 DingTalk chunk 一个一个转发。
+         *
+         * 不会把整个文件读进内存。
          */
-        if (
-            !range
-        ) {
+        if (!range) {
 
             res
                 .status(200)
@@ -3407,6 +2553,14 @@ async function handleFileRequest(
                             manifest.size
                         )
                 });
+
+            console.log(
+                `[FULL] ${
+                    manifest.filename
+                } | ${
+                    manifest.size
+                } bytes | DIRECT`
+            );
 
             await streamRangeDirect({
 
@@ -3460,37 +2614,6 @@ async function handleFileRequest(
                     }`
             });
 
-        /*
-         * 重要：
-         *
-         * 不再使用：
-         *
-         *     range.start > 0
-         *       === seek
-         *
-         * 因为浏览器首次打开视频时，
-         * 完全可能直接请求非 0 Range。
-         *
-         * 所以：
-         *
-         * 默认所有 Range 都直接流。
-         *
-         * 只有明确满足“短 Range seek”
-         * 时才允许 cache。
-         *
-         * 这里用一个非常保守的条件：
-         *
-         * start > 0
-         * && 请求长度 <= SEEK_BUFFER_SIZE
-         *
-         * 这样普通播放的大 Range 不会进入 Buffer。
-         */
-        const useSeekCache =
-            SEEK_CACHE_ENABLED &&
-            range.start > 0 &&
-            range.length <=
-                SEEK_BUFFER_SIZE;
-
         console.log(
             `[RANGE] ${
                 manifest.filename
@@ -3500,70 +2623,52 @@ async function handleFileRequest(
                 range.end
             } | ${
                 range.length
-            } bytes | ${
-                useSeekCache
-                    ? 'SEEK-CACHE'
-                    : 'DIRECT'
-            }`
+            } bytes | DIRECT`
         );
 
-        if (
-            useSeekCache
-        ) {
+        /*
+         * ------------------------------------------------------------
+         * 核心：
+         *
+         * 所有 Range 都直接代理。
+         *
+         * 没有：
+         *
+         *     seek cache
+         *     shared cache
+         *     prefetch
+         *     inflight merge
+         *     global queue
+         *
+         * 一个用户一个请求。
+         * 一个请求一个 DingTalk fetch。
+         * ------------------------------------------------------------
+         */
+        await streamRangeDirect({
 
-            await streamSeekRange({
+            manifest,
 
-                manifest,
+            start:
+                range.start,
 
-                start:
-                    range.start,
+            end:
+                range.end,
 
-                end:
-                    range.end,
+            response:
+                res,
 
-                response:
-                    res,
-
-                signal:
-                    controller.signal
-            });
-
-        } else {
-
-            /*
-             * 首次播放最重要的路径：
-             *
-             * 不缓存。
-             * 不 Buffer。
-             * 不等待。
-             *
-             * 直接：
-             *
-             * DingTalk → Node → Browser
-             */
-            await streamRangeDirect({
-
-                manifest,
-
-                start:
-                    range.start,
-
-                end:
-                    range.end,
-
-                response:
-                    res,
-
-                signal:
-                    controller.signal
-            });
-        }
+            signal:
+                controller.signal
+        });
 
         finished =
             true;
 
     } catch (error) {
 
+        /*
+         * 用户自己关闭页面。
+         */
         if (
             controller.signal.aborted
         ) {
@@ -3576,12 +2681,15 @@ async function handleFileRequest(
             error
         );
 
+        /*
+         * 还没有发送 HTTP header。
+         */
         if (
             !res.headersSent
         ) {
 
             return res
-                .status(500)
+                .status(502)
                 .json({
 
                     success:
@@ -3589,19 +2697,23 @@ async function handleFileRequest(
 
                     error:
                         error.message ||
-                        'Internal Server Error'
+                        'Upstream streaming error'
                 });
         }
 
+        /*
+         * 已经开始发送视频数据，
+         * 此时不能再修改 HTTP 状态码。
+         *
+         * 直接关闭当前连接。
+         */
         if (
             !res.destroyed
         ) {
 
             try {
 
-                res.destroy(
-                    error
-                );
+                res.destroy();
 
             } catch {}
         }
@@ -3738,12 +2850,24 @@ app.get(
                     'DIRECT_STREAM',
 
                 seek:
-                    'OPTIONAL_SMALL_MEMORY_CACHE',
+                    'DIRECT_STREAM',
+
+                sharedCache:
+                    false,
+
+                seekCache:
+                    false,
 
                 diskCache:
                     false,
 
                 fullFileMemoryCache:
+                    false,
+
+                globalRemoteQueue:
+                    false,
+
+                globalRemoteConcurrencyLimit:
                     false,
 
                 remoteRange:
@@ -3753,34 +2877,17 @@ app.get(
             chunkSize:
                 CHUNK_SIZE,
 
-            seekCacheEnabled:
-                SEEK_CACHE_ENABLED,
+            remoteTimeout:
+                REMOTE_TIMEOUT_MS,
 
-            seekPrefetchSize:
-                SEEK_PREFETCH_SIZE,
-
-            seekBufferSize:
-                SEEK_BUFFER_SIZE,
-
-            maxSeekCacheBytes:
-                MAX_SEEK_CACHE_BYTES,
-
-            maxSeekCachePerFile:
-                MAX_SEEK_CACHE_PER_FILE,
-
-            seekCacheBytes,
-
-            seekCacheItems:
-                seekCache.size,
-
-            globalRemoteConcurrency:
-                GLOBAL_REMOTE_CONCURRENCY,
-
-            globalRemoteActive:
-                globalRemoteActive,
-
-            globalRemoteQueued:
-                globalRemoteQueue.length,
+            /*
+             * 当前 Node 没有主动限制
+             * DingTalk 播放并发。
+             *
+             * 每个 HTTP 请求独立 fetch。
+             */
+            remoteProxyMode:
+                'ONE_REQUEST_TO_ONE_UPSTREAM_REQUEST',
 
             memory: {
 
@@ -3893,46 +3000,6 @@ app.use(
 
 /*
 |--------------------------------------------------------------------------
-| Cache monitor
-|--------------------------------------------------------------------------
-*/
-
-setInterval(
-    () => {
-
-        if (
-            seekCache.size === 0
-        ) {
-
-            return;
-        }
-
-        console.log(
-
-            `[CACHE] items=${
-                seekCache.size
-            } | memory=${
-                (
-                    seekCacheBytes /
-                    1024 /
-                    1024
-                ).toFixed(2)
-            }MB / ${
-                (
-                    MAX_SEEK_CACHE_BYTES /
-                    1024 /
-                    1024
-                ).toFixed(0)
-            }MB`
-
-        );
-
-    },
-    30000
-);
-
-/*
-|--------------------------------------------------------------------------
 | Start
 |--------------------------------------------------------------------------
 */
@@ -3949,6 +3016,10 @@ app.listen(
 
         console.log(
             ' Universal File Streaming Server'
+        );
+
+        console.log(
+            ' Direct Range Proxy Mode'
         );
 
         console.log(
@@ -3974,53 +3045,29 @@ app.listen(
         );
 
         console.log(
-            `Remote Concurrency: ${
-                GLOBAL_REMOTE_CONCURRENCY
-            }`
-        );
-
-        console.log(
             `Remote Timeout: ${
                 REMOTE_TIMEOUT_MS
             } ms`
         );
 
         console.log(
-            `Seek Cache: ${
-                SEEK_CACHE_ENABLED
-                    ? 'ON'
-                    : 'OFF'
-            }`
+            'Shared Cache: OFF'
         );
 
         console.log(
-            `Seek Buffer: ${
-                (
-                    SEEK_BUFFER_SIZE /
-                    1024 /
-                    1024
-                ).toFixed(2)
-            } MB`
+            'Seek Cache: OFF'
         );
 
         console.log(
-            `Seek Prefetch: ${
-                (
-                    SEEK_PREFETCH_SIZE /
-                    1024 /
-                    1024
-                ).toFixed(2)
-            } MB`
+            'Prefetch: OFF'
         );
 
         console.log(
-            `Max Seek Cache: ${
-                (
-                    MAX_SEEK_CACHE_BYTES /
-                    1024 /
-                    1024
-                ).toFixed(0)
-            } MB`
+            'Global Remote Queue: OFF'
+        );
+
+        console.log(
+            'Remote Concurrency Limit: OFF'
         );
 
         console.log(
@@ -4053,4 +3100,4 @@ app.listen(
 
         console.log('');
     }
-);// update Thu Sep 10 11:44:28 PM CST 2026
+);
