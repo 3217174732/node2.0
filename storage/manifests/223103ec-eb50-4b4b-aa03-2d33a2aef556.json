@@ -1,0 +1,21 @@
+{
+  "id": "223103ec-eb50-4b4b-aa03-2d33a2aef556",
+  "filename": "1785343153138.jpg",
+  "extension": ".jpg",
+  "contentType": "image/jpeg",
+  "size": 38384,
+  "chunkSize": 5242880,
+  "chunkCount": 1,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 38384,
+      "url": "https://static.dingtalk.com/media/lADPD2TRuPI_xePNAtDNAtA_720_720.jpg",
+      "uploadedAt": "2026-09-18T12:33:26.248Z",
+      "source": "browser-remote-url"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-18T12:33:13.550Z",
+  "completedAt": "2026-09-18T12:33:29.955Z"
+}

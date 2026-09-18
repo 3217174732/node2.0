@@ -1,0 +1,26 @@
+{
+  "id": "6c190f0a-1a70-43ef-8461-ab47e27a5ac0",
+  "filename": "沐泽 - Stee Wee Bee-Leaving（抖音版）（沐泽 remix）.mp3",
+  "extension": ".mp3",
+  "contentType": "audio/mpeg",
+  "size": 7615258,
+  "chunkSize": 5242880,
+  "chunkCount": 2,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD0UWHbWkABvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T12:21:58.382Z"
+    },
+    "1": {
+      "index": 1,
+      "size": 2372378,
+      "url": "https://static.dingtalk.com/media/lADPM2aefFbckpvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T12:22:05.003Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-10T12:21:45.776Z",
+  "completedAt": "2026-09-10T12:22:05.250Z"
+}

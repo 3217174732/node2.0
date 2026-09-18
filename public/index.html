@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>Virtual Video</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:24px 14px;background:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#222}
+.container{width:100%;max-width:900px;margin:0 auto;background:#fff;padding:24px;border-radius:12px;box-shadow:0 5px 25px rgba(0,0,0,.08)}
+h1{margin:0 0 22px;font-size:24px}
+.row{margin-top:16px}
+button{padding:11px 20px;border:0;border-radius:7px;background:#1677ff;color:#fff;cursor:pointer;font-size:15px}
+button:disabled{background:#aaa;cursor:not-allowed}
+progress{width:100%;height:20px;margin-top:12px}
+#status{margin-top:12px;color:#555;word-break:break-all;line-height:1.6}
+.info{margin-top:16px;padding:14px;background:#f7f7f7;border-radius:7px;font-size:14px;line-height:1.8;word-break:break-all}
+video{display:block;width:100%;margin-top:24px;background:#000;border-radius:8px}
+.small{font-size:12px;color:#888;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Virtual Video</h1>
+<div class="row"><input id="file" type="file" accept="video/*"></div>
+<div class="row"><button id="upload">开始上传</button></div>
+<div class="row"><progress id="progress" value="0" max="100"></progress></div>
+<div id="status">等待选择视频</div>
+<div id="info" class="info"></div>
+<div class="small">
+前端：5 MiB 分片 → 前置 125 字节 PNG → 第三方图片上传接口 → 返回 URL → Node 代理取回 → 去掉前 125 字节 → 原钉钉分片上传。<br>
+Node 播放缓存保持：64 MiB RAM + 1 GiB 磁盘 + 50 MiB 预取 + 多用户共享。
+</div>
+<video id="video" controls playsinline preload="metadata"></video>
+</div>
+<script>
+const CHUNK_SIZE = 5 * 1024 * 1024;
+const UPLOAD_CONCURRENCY = 5;
+const MAX_RETRY = 3;
+const PREFIX_BYTES = 125;
+const REMOTE_UPLOAD_URL = 'https://i.snssdk.com/feedback/image/v1/upload/?appkey=aweme-web&aid=1128&app_name=aweme';
+
+// 精确 125 字节的 1x1 PNG 前缀。
+const PREFIX_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4//8/AAX+Av4zEpUUAAAAAElFTkSuQmCCAAAALHRFWHRDb21tZW50PUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQRNpXMU=';
+const PREFIX = Uint8Array.from(atob(PREFIX_BASE64), c => c.charCodeAt(0));
+
+const fileInput=document.getElementById('file');
+const uploadButton=document.getElementById('upload');
+const progress=document.getElementById('progress');
+const status=document.getElementById('status');
+const info=document.getElementById('info');
+const video=document.getElementById('video');
+
+if(PREFIX.byteLength !== PREFIX_BYTES){
+    throw new Error('125 字节 PNG 前缀长度异常');
+}
+
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function formatBytes(bytes){
+    if(bytes<1024)return `${bytes} B`;
+    if(bytes<1024*1024)return `${(bytes/1024).toFixed(2)} KB`;
+    if(bytes<1024*1024*1024)return `${(bytes/1024/1024).toFixed(2)} MB`;
+    return `${(bytes/1024/1024/1024).toFixed(2)} GB`;
+}
+function escapeHtml(value){return String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
+
+async function createVideo(file){
+    const response=await fetch('/api/videos',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({filename:file.name,size:file.size,contentType:file.type||'video/mp4'})
+    });
+    const result=await response.json();
+    if(!response.ok)throw new Error(result.error||'创建视频失败');
+    return result;
+}
+
+async function uploadWrappedToRemote(blob,index){
+    let lastError;
+    for(let attempt=1;attempt<=MAX_RETRY;attempt++){
+        try{
+            // 这里才是唯一一次把本地视频 chunk 发往第三方图片上传接口。
+            const wrapped=new Blob([PREFIX,blob],{type:'image/png'});
+            const form=new FormData();
+            form.append('image',wrapped,`chunk_${String(index).padStart(8,'0')}.png`);
+
+            const response=await fetch(REMOTE_UPLOAD_URL,{method:'POST',body:form});
+            let result;
+            try{result=await response.json();}
+            catch{throw new Error(`第三方上传返回非 JSON，HTTP ${response.status}`);}
+
+            if(!response.ok || result?.message!=='success'){
+                throw new Error(result?.message||`第三方上传失败 HTTP ${response.status}`);
+            }
+
+            const url=result?.data?.url_list?.[0]?.url;
+            if(typeof url!=='string' || !/^https?:\/\//i.test(url)){
+                throw new Error('第三方返回结果中没有 data.url_list[0].url');
+            }
+            return url;
+        }catch(error){
+            lastError=error;
+            if(attempt<MAX_RETRY){
+                status.textContent=`第 ${index+1} 个分片第三方上传失败，${attempt} 秒后重试...`;
+                await sleep(1000*attempt);
+            }
+        }
+    }
+    throw lastError||new Error(`分片 ${index} 第三方上传失败`);
+}
+
+async function sendRemoteUrlToNode(videoId,index,url){
+    let lastError;
+    for(let attempt=1;attempt<=MAX_RETRY;attempt++){
+        try{
+            const response=await fetch(`/api/videos/${videoId}/remote-chunks/${index}`,{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({url,prefixBytes:PREFIX_BYTES})
+            });
+            const result=await response.json();
+            if(!response.ok)throw new Error(result.error||`Node 接收分片失败 HTTP ${response.status}`);
+            return result;
+        }catch(error){
+            lastError=error;
+            if(attempt<MAX_RETRY){
+                status.textContent=`第 ${index+1} 个分片 Node 处理失败，${attempt} 秒后重试...`;
+                await sleep(1000*attempt);
+            }
+        }
+    }
+    throw lastError||new Error(`分片 ${index} Node 处理失败`);
+}
+
+async function uploadOneChunk({videoId,index,file,chunkSize}){
+    const start=index*chunkSize;
+    const end=Math.min(start+chunkSize,file.size);
+    const blob=file.slice(start,end);
+    const expected=end-start;
+    if(blob.size!==expected)throw new Error(`本地 chunk ${index} 大小错误`);
+
+    const remoteUrl=await uploadWrappedToRemote(blob,index);
+    return await sendRemoteUrlToNode(videoId,index,remoteUrl);
+}
+
+async function uploadChunksConcurrent({file,videoId,chunkSize,chunkCount}){
+    let nextIndex=0;
+    let completed=0;
+    async function worker(){
+        while(true){
+            const index=nextIndex++;
+            if(index>=chunkCount)return;
+            status.textContent=`正在处理分片 ${index+1}/${chunkCount}（${UPLOAD_CONCURRENCY} 路并发）...`;
+            await uploadOneChunk({videoId,index,file,chunkSize});
+            completed++;
+            progress.value=Math.round(completed/chunkCount*100);
+            status.textContent=`分片已完成 ${completed}/${chunkCount}`;
+        }
+    }
+    const count=Math.min(UPLOAD_CONCURRENCY,chunkCount);
+    await Promise.all(Array.from({length:count},()=>worker()));
+}
+
+async function completeVideo(videoId){
+    const response=await fetch(`/api/videos/${videoId}/complete`,{method:'POST'});
+    const result=await response.json();
+    if(!response.ok){
+        let message=result.error||'完成上传失败';
+        if(Array.isArray(result.missing)&&result.missing.length)message+=`，缺失分片：${result.missing.join(', ')}`;
+        throw new Error(message);
+    }
+    return result;
+}
+
+uploadButton.onclick=async()=>{
+    const file=fileInput.files[0];
+    if(!file){alert('请选择视频');return;}
+    uploadButton.disabled=true;
+    progress.value=0;
+    video.removeAttribute('src');
+    video.load();
+    try{
+        status.textContent='正在创建视频任务...';
+        const infoResult=await createVideo(file);
+        const videoId=infoResult.id;
+        const chunkSize=infoResult.chunkSize||CHUNK_SIZE;
+        const chunkCount=infoResult.chunkCount||Math.ceil(file.size/chunkSize);
+
+        info.innerHTML=`<div>文件：${escapeHtml(file.name)}</div><div>大小：${formatBytes(file.size)}</div><div>分片：${chunkCount} 个</div><div>每片：${formatBytes(chunkSize)}</div><div>并发：${UPLOAD_CONCURRENCY} 个</div><div>前缀：${PREFIX_BYTES} 字节 PNG</div><div>ID：${escapeHtml(videoId)}</div>`;
+
+        await uploadChunksConcurrent({file,videoId,chunkSize,chunkCount});
+        progress.value=100;
+        status.textContent='所有分片已通过第三方 URL → Node → 钉钉，正在完成...';
+
+        const result=await completeVideo(videoId);
+        const videoUrl=result.videoUrl;
+        status.textContent='上传完成，可以播放。';
+        video.src=videoUrl;
+        video.load();
+        info.innerHTML+=`<div style="margin-top:10px;color:#1677ff">虚拟视频地址：${escapeHtml(videoUrl)}</div>`;
+    }catch(error){
+        console.error(error);
+        status.textContent=`上传失败：${error.message}`;
+    }finally{
+        uploadButton.disabled=false;
+    }
+};
+</script>
+</body>
+</html>

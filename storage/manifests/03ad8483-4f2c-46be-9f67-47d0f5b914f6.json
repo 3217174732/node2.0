@@ -1,0 +1,20 @@
+{
+  "id": "03ad8483-4f2c-46be-9f67-47d0f5b914f6",
+  "filename": "周深 - 漂洋过海来看你.mp3",
+  "extension": ".mp3",
+  "contentType": "audio/mpeg",
+  "size": 4421628,
+  "chunkSize": 5242880,
+  "chunkCount": 1,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 4421628,
+      "url": "https://static.dingtalk.com/media/lADPM3Z-G8XwB1vNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T12:17:19.497Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-10T12:17:05.710Z",
+  "completedAt": "2026-09-10T12:17:19.782Z"
+}

@@ -1,0 +1,28 @@
+{
+  "id": "89c5499e-a1ef-4cd0-b0bb-8c35f9619816",
+  "filename": "周政 DJ铁柱Remix - 爱要坦荡荡.mp3",
+  "extension": ".mp3",
+  "contentType": "audio/mpeg",
+  "size": 6293097,
+  "chunkSize": 5242880,
+  "chunkCount": 2,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD19PGJCbTkPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-18T12:04:43.191Z",
+      "source": "browser-remote-url"
+    },
+    "1": {
+      "index": 1,
+      "size": 1050217,
+      "url": "https://static.dingtalk.com/media/lADPM2H39SZw32PNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-18T12:02:40.259Z",
+      "source": "browser-remote-url"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-18T12:01:44.130Z",
+  "completedAt": "2026-09-18T12:04:43.348Z"
+}

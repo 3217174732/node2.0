@@ -1,0 +1,56 @@
+{
+  "id": "2d9834c1-59d3-4110-8ada-1daee2a406ca",
+  "filename": "MT2.26.8.apk",
+  "extension": ".apk",
+  "contentType": "application/vnd.android.package-archive",
+  "size": 32098730,
+  "chunkSize": 5242880,
+  "chunkCount": 7,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2yLhfPgKXvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:09:18.555Z"
+    },
+    "1": {
+      "index": 1,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD07bOdSGT3vNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:09:31.588Z"
+    },
+    "2": {
+      "index": 2,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2Xwxa05V_vNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:09:43.729Z"
+    },
+    "3": {
+      "index": 3,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM3gHAoJU_3vNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:09:55.044Z"
+    },
+    "4": {
+      "index": 4,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM3djTP7tmDvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:10:06.021Z"
+    },
+    "5": {
+      "index": 5,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2TyHSxqgLvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:10:17.726Z"
+    },
+    "6": {
+      "index": 6,
+      "size": 641450,
+      "url": "https://static.dingtalk.com/media/lADPM3NUqE_x4TvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:10:21.190Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-10T13:09:05.820Z",
+  "completedAt": "2026-09-10T13:10:21.529Z"
+}

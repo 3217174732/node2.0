@@ -1,0 +1,42 @@
+{
+  "id": "e4a7848b-262f-4ec6-9255-cf3a8291d238",
+  "filename": "mmexport1737040878565.mp4",
+  "extension": ".mp4",
+  "contentType": "video/mp4",
+  "size": 17761889,
+  "chunkSize": 5242880,
+  "chunkCount": 4,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM25udtUVVCPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-18T12:57:10.705Z",
+      "source": "browser-remote-url"
+    },
+    "1": {
+      "index": 1,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM3svjOWJOaPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-18T12:57:42.874Z",
+      "source": "browser-remote-url"
+    },
+    "2": {
+      "index": 2,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD02TztbXlCPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-18T12:57:33.328Z",
+      "source": "browser-remote-url"
+    },
+    "3": {
+      "index": 3,
+      "size": 2033249,
+      "url": "https://static.dingtalk.com/media/lADPD12sumk-9CPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-18T12:57:10.970Z",
+      "source": "browser-remote-url"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-18T12:57:01.234Z",
+  "completedAt": "2026-09-18T12:57:43.218Z"
+}

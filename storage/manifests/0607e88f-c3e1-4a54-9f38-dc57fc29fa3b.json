@@ -1,0 +1,80 @@
+{
+  "id": "0607e88f-c3e1-4a54-9f38-dc57fc29fa3b",
+  "filename": "Screenrecorder-2026-06-18-10-27-12-541.mp4",
+  "extension": ".mp4",
+  "contentType": "video/mp4",
+  "size": 52786715,
+  "chunkSize": 5242880,
+  "chunkCount": 11,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2A3k390kmPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:23:53.784Z"
+    },
+    "1": {
+      "index": 1,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2H1OqcoeGPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:23:59.586Z"
+    },
+    "2": {
+      "index": 2,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM18dogwXiuPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:05.727Z"
+    },
+    "3": {
+      "index": 3,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2vn0EYJnWPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:11.582Z"
+    },
+    "4": {
+      "index": 4,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM3brP2iao2PNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:17.639Z"
+    },
+    "5": {
+      "index": 5,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM18UibLqVePNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:23.367Z"
+    },
+    "6": {
+      "index": 6,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM2rW90Tie-PNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:29.474Z"
+    },
+    "7": {
+      "index": 7,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD1Od8vxPbmPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:35.487Z"
+    },
+    "8": {
+      "index": 8,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD0vWJ8kBoOPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:41.713Z"
+    },
+    "9": {
+      "index": 9,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM1ssGCKeCOPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:49.346Z"
+    },
+    "10": {
+      "index": 10,
+      "size": 357915,
+      "url": "https://static.dingtalk.com/media/lADPM1lucPrqIuPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:24:43.485Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-13T16:23:24.874Z",
+  "completedAt": "2026-09-13T16:24:49.544Z"
+}

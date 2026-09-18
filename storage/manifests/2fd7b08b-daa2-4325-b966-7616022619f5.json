@@ -1,0 +1,26 @@
+{
+  "id": "2fd7b08b-daa2-4325-b966-7616022619f5",
+  "filename": "Swang多雷 - 泡沫.mp3",
+  "extension": ".mp3",
+  "contentType": "audio/mpeg",
+  "size": 7833984,
+  "chunkSize": 5242880,
+  "chunkCount": 2,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPM3brP2zFo7vNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:07:08.233Z"
+    },
+    "1": {
+      "index": 1,
+      "size": 2591104,
+      "url": "https://static.dingtalk.com/media/lADPD0naqFgeVjvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T13:07:15.317Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-10T13:06:55.263Z",
+  "completedAt": "2026-09-10T13:07:15.613Z"
+}

@@ -1,0 +1,37 @@
+{
+  "id": "09c17203-41d6-4b5f-aebf-bce28bb2ee82",
+  "filename": "Screenrecorder-2026-06-18-10-27-12-541.mp4",
+  "extension": ".mp4",
+  "contentType": "video/mp4",
+  "size": 52786715,
+  "chunkSize": 5242880,
+  "chunkCount": 11,
+  "chunks": {
+    "1": {
+      "index": 1,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD1NC__15yGPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:17:58.474Z"
+    },
+    "5": {
+      "index": 5,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD0oPaJTHU2PNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:18:16.934Z"
+    },
+    "8": {
+      "index": 8,
+      "size": 5242880,
+      "url": "https://static.dingtalk.com/media/lADPD2HmHjURuSPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:18:48.089Z"
+    },
+    "10": {
+      "index": 10,
+      "size": 357915,
+      "url": "https://static.dingtalk.com/media/lADPM3nL8A39ZSPNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-13T16:18:20.897Z"
+    }
+  },
+  "status": "uploading",
+  "createdAt": "2026-09-13T16:17:26.305Z"
+}

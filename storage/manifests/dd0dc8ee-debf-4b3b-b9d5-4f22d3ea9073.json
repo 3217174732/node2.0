@@ -1,0 +1,20 @@
+{
+  "id": "dd0dc8ee-debf-4b3b-b9d5-4f22d3ea9073",
+  "filename": "1000117647.mp4",
+  "extension": ".mp4",
+  "contentType": "video/mp4",
+  "size": 3464232,
+  "chunkSize": 5242880,
+  "chunkCount": 1,
+  "chunks": {
+    "0": {
+      "index": 0,
+      "size": 3464232,
+      "url": "https://static.dingtalk.com/media/lADPM3L5tUA8nuvNAljNAyA_800_600.jpg",
+      "uploadedAt": "2026-09-10T15:29:01.243Z"
+    }
+  },
+  "status": "ready",
+  "createdAt": "2026-09-10T15:28:41.063Z",
+  "completedAt": "2026-09-10T15:29:01.452Z"
+}
